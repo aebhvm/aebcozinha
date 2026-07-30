@@ -1,0 +1,1497 @@
+import { createClient, type Client } from '@libsql/client/web'
+import bcrypt from 'bcryptjs'
+import { SignJWT, jwtVerify } from 'jose'
+import { z } from 'zod'
+import { breakfastMenus, type MenuDay } from '../../src/menuData'
+
+type Role = 'gestor' | 'colaborador' | 'estoquista'
+
+type AuthUser = {
+  id: number
+  name: string
+  username: string
+  role: Role
+  active: boolean
+}
+
+const DEFAULT_ALLOWED_ORIGIN = 'https://escala-cozinha-aebvmhotel1.netlify.app'
+
+function jwtSecretBytes() {
+  const value = process.env.JWT_SECRET?.trim() ?? ''
+  if (value.length < 32 || value === 'dev-secret-change-me' || value === 'troque-este-segredo-local') {
+    throw new Error('JWT_SECRET ausente ou fraco. Configure um segredo com pelo menos 32 caracteres.')
+  }
+  return new TextEncoder().encode(value)
+}
+
+function initialPin(name: 'INITIAL_ADMIN_PIN' | 'INITIAL_STOCKKEEPER_PIN', required: boolean) {
+  const value = process.env[name]?.trim() ?? ''
+  if (!value && !required) return ''
+  if (!/^\d{4,12}$/.test(value)) {
+    throw new Error('Configure ' + name + ' com um PIN numerico de 4 a 12 digitos.')
+  }
+  return value
+}
+
+type Event = {
+  httpMethod: string
+  path: string
+  rawUrl?: string
+  headers: Record<string, string | undefined>
+  body: string | null
+}
+
+let db: Client | null = null
+let ready: Promise<void> | null = null
+
+const SCHEMA_VERSION = '2026-07-27-technical-sheets'
+
+const json = (statusCode: number, body: unknown) => ({
+  statusCode,
+  headers: {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': process.env.ALLOWED_ORIGIN?.trim() || DEFAULT_ALLOWED_ORIGIN,
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Cache-Control': 'no-store',
+    'Vary': 'Origin',
+    'X-Content-Type-Options': 'nosniff',
+  },
+  body: JSON.stringify(body),
+})
+
+function getDb() {
+  if (!db) {
+    db = createClient({
+      url: process.env.TURSO_DATABASE_URL ?? process.env.DATABASE_URL ?? 'file:local-cozinha.db',
+      authToken: process.env.TURSO_AUTH_TOKEN ?? process.env.DATABASE_AUTH_TOKEN,
+    })
+  }
+
+  return db
+}
+
+async function ensureDb() {
+  if (!ready) {
+    ready = migrate()
+  }
+  await ready
+}
+
+async function migrate() {
+  const client = getDb()
+  if (await schemaIsCurrent(client)) return
+  await client.batch(
+    [
+      `create table if not exists users (
+        id integer primary key autoincrement,
+        name text not null,
+        username text not null unique,
+        pin_hash text not null,
+        role text not null check(role in ('gestor', 'colaborador', 'estoquista')),
+        active integer not null default 1,
+        created_at text not null default current_timestamp
+      )`,
+      `create table if not exists stations (
+        id integer primary key autoincrement,
+        name text not null unique,
+        description text,
+        active integer not null default 1,
+        created_at text not null default current_timestamp
+      )`,
+      `create table if not exists daily_schedules (
+        id integer primary key autoincrement,
+        date text not null,
+        user_id integer not null references users(id),
+        station_id integer not null references stations(id),
+        created_at text not null default current_timestamp,
+        unique(date, user_id)
+      )`,
+      `create table if not exists breaks (
+        id integer primary key autoincrement,
+        schedule_id integer not null unique references daily_schedules(id) on delete cascade,
+        start_time text not null,
+        end_time text not null
+      )`,
+      `create table if not exists tasks (
+        id integer primary key autoincrement,
+        date text not null,
+        user_id integer not null references users(id),
+        title text not null,
+        notes text,
+        priority text not null default 'normal' check(priority in ('baixa', 'normal', 'alta', 'urgente')),
+        due_time text,
+        created_at text not null default current_timestamp
+      )`,
+      `create table if not exists task_completions (
+        id integer primary key autoincrement,
+        task_id integer not null unique references tasks(id) on delete cascade,
+        completed_by integer not null references users(id),
+        completed_at text not null default current_timestamp
+      )`,
+      `create table if not exists notices (
+        id integer primary key autoincrement,
+        title text not null,
+        body text,
+        pdf_name text,
+        pdf_data_url text,
+        expires_at text,
+        active integer not null default 1,
+        created_at text not null default current_timestamp
+      )`,
+      `create table if not exists stock_categories (
+        id integer primary key autoincrement,
+        name text not null unique,
+        active integer not null default 1,
+        created_at text not null default current_timestamp
+      )`,
+      `create table if not exists products (
+        id integer primary key autoincrement,
+        name text not null unique,
+        category text not null,
+        category_name text,
+        unit text not null,
+        observations text,
+        active integer not null default 1,
+        created_at text not null default current_timestamp
+      )`,
+      `create table if not exists inventory_check_sectors (
+        id integer primary key autoincrement,
+        name text not null unique,
+        active integer not null default 1,
+        created_at text not null default current_timestamp
+      )`,
+      `create table if not exists inventory_check_items (
+        id integer primary key autoincrement,
+        name text not null unique,
+        sector_id integer references inventory_check_sectors(id),
+        status text check(status in ('ok', 'pedir', 'produzir')),
+        active integer not null default 1,
+        created_at text not null default current_timestamp,
+        updated_at text not null default current_timestamp
+      )`,
+      `create table if not exists inventory_check_records (
+        id integer primary key autoincrement,
+        item_id integer not null references inventory_check_items(id) on delete cascade,
+        record_date text not null,
+        status text not null check(status in ('ok', 'pedir', 'produzir')),
+        checked_by integer references users(id),
+        created_at text not null default current_timestamp,
+        updated_at text not null default current_timestamp,
+        unique(item_id, record_date)
+      )`,
+      `create table if not exists stock_orders (
+        id integer primary key autoincrement,
+        requested_by integer not null references users(id),
+        requested_date text,
+        notes text,
+        status text not null default 'pendente' check(status in ('pendente', 'separado', 'entregue')),
+        created_at text not null default current_timestamp,
+        updated_at text not null default current_timestamp
+      )`,
+      `create table if not exists stock_order_items (
+        id integer primary key autoincrement,
+        order_id integer not null references stock_orders(id) on delete cascade,
+        product_id integer not null references products(id),
+        product_name text not null,
+        product_category text not null,
+        product_unit text not null,
+        quantity text not null
+      )`,      `create table if not exists breakfast_menu_items (
+        id integer primary key autoincrement,
+        menu_id text not null,
+        menu_title text not null,
+        section text not null,
+        item text not null,
+        segunda text not null,
+        terca text not null,
+        quarta text not null,
+        quinta text not null,
+        sexta text not null,
+        sabado text not null,
+        domingo text not null,
+        active integer not null default 1,
+        sort_order integer not null default 0,
+        created_at text not null default current_timestamp,
+        updated_at text not null default current_timestamp,
+        unique(menu_id, section, item)
+      )`,
+      `create table if not exists technical_sheets (
+        id integer primary key autoincrement,
+        name text not null,
+        photo_data_url text,
+        ingredients text not null,
+        preparation text not null,
+        active integer not null default 1,
+        created_by integer references users(id),
+        created_at text not null default current_timestamp,
+        updated_at text not null default current_timestamp
+      )`
+    ],
+    'write',
+  )
+
+  await ensureUserRoleSchema()
+  await ensureColumn('tasks', 'priority', "alter table tasks add column priority text not null default 'normal'")
+  await ensureColumn('tasks', 'due_time', 'alter table tasks add column due_time text')
+  await ensureColumn('notices', 'expires_at', 'alter table notices add column expires_at text')
+  await ensureColumn('products', 'observations', 'alter table products add column observations text')
+  await ensureColumn('products', 'category_name', 'alter table products add column category_name text')
+  await ensureColumn('stock_orders', 'requested_date', 'alter table stock_orders add column requested_date text')
+  await ensureColumn('inventory_check_items', 'sector_id', 'alter table inventory_check_items add column sector_id integer')
+  await seedStockCategories()
+  await backfillStockCategoriesFromProducts()
+  await seedBreakfastMenus()
+
+  const count = await client.execute('select count(*) as total from users')
+  if (Number(count.rows[0]?.total ?? 0) === 0) {
+    const initialAdminPin = initialPin('INITIAL_ADMIN_PIN', true)
+    const hash = await bcrypt.hash(initialAdminPin, 10)
+    await client.batch(
+      [
+        {
+          sql: 'insert into users (name, username, pin_hash, role) values (?, ?, ?, ?)',
+          args: ['Administrador', 'admin', hash, 'gestor'],
+        },
+        { sql: 'insert into stations (name, description) values (?, ?)', args: ['Chapa', 'Grelhados e finalizações quentes'] },
+        { sql: 'insert into stations (name, description) values (?, ?)', args: ['Salada', 'Preparo frio e montagem'] },
+        { sql: 'insert into stations (name, description) values (?, ?)', args: ['Pré-preparo', 'Organização de insumos'] },
+      ],
+      'write',
+    )
+  }
+
+  await seedStockkeeperUser()
+  await markSchemaCurrent()
+}
+
+async function schemaIsCurrent(client: Client) {
+  try {
+    const result = await client.execute({
+      sql: 'select value from app_meta where key = ?',
+      args: ['schema_version'],
+    })
+    return String(result.rows[0]?.value ?? '') === SCHEMA_VERSION
+  } catch {
+    return false
+  }
+}
+
+async function markSchemaCurrent() {
+  await getDb().batch(
+    [
+      `create table if not exists app_meta (
+        key text primary key,
+        value text not null,
+        updated_at text not null default current_timestamp
+      )`,
+      {
+        sql: `insert into app_meta (key, value, updated_at) values (?, ?, ?)
+          on conflict(key) do update set value = excluded.value, updated_at = excluded.updated_at`,
+        args: ['schema_version', SCHEMA_VERSION, new Date().toISOString()],
+      },
+    ],
+    'write',
+  )
+}
+async function ensureUserRoleSchema() {
+  const result = await getDb().execute("select sql from sqlite_schema where type = 'table' and name = 'users'")
+  const sql = String(result.rows[0]?.sql ?? '')
+  if (sql.includes('estoquista')) return
+
+  await getDb().execute('pragma foreign_keys = off')
+  await getDb().batch(
+    [
+      'drop table if exists users_next',
+      `create table if not exists users_next (
+        id integer primary key autoincrement,
+        name text not null,
+        username text not null unique,
+        pin_hash text not null,
+        role text not null check(role in ('gestor', 'colaborador', 'estoquista')),
+        active integer not null default 1,
+        created_at text not null default current_timestamp
+      )`,
+      `insert into users_next (id, name, username, pin_hash, role, active, created_at)
+        select id, name, username, pin_hash, role, active, created_at from users`,
+      'drop table users',
+      'alter table users_next rename to users',
+    ],
+    'write',
+  )
+  await getDb().execute('pragma foreign_keys = on')
+}
+
+async function seedStockkeeperUser() {
+  const initialStockkeeperPin = initialPin('INITIAL_STOCKKEEPER_PIN', false)
+  if (!initialStockkeeperPin) return
+  const existing = await getDb().execute({ sql: 'select id from users where username = ?', args: ['almoxarife'] })
+  if (existing.rows.length > 0) return
+  const hash = await bcrypt.hash(initialStockkeeperPin, 10)
+  await getDb().execute({
+    sql: 'insert into users (name, username, pin_hash, role, active) values (?, ?, ?, ?, 1)',
+    args: ['Almoxarife', 'almoxarife', hash, 'estoquista'],
+  })
+}
+
+async function seedStockCategories() {
+  for (const name of ['Alimentos', 'Limpeza']) {
+    await getDb().execute({
+      sql: 'insert into stock_categories (name) values (?) on conflict(name) do nothing',
+      args: [name],
+    })
+  }
+}
+
+async function backfillStockCategoriesFromProducts() {
+  const result = await getDb().execute("select distinct coalesce(category_name, category) as category from products where coalesce(category_name, category) is not null and trim(coalesce(category_name, category)) <> ''")
+  for (const row of result.rows) {
+    await getDb().execute({
+      sql: 'insert into stock_categories (name) values (?) on conflict(name) do nothing',
+      args: [String(row.category)],
+    })
+  }
+}
+
+async function seedBreakfastMenus() {
+  const count = await getDb().execute('select count(*) as total from breakfast_menu_items')
+  if (Number(count.rows[0]?.total ?? 0) > 0) return
+
+  const statements = breakfastMenus.flatMap((menu) =>
+    menu.items.map((item, index) => ({
+      sql: `insert into breakfast_menu_items
+        (menu_id, menu_title, section, item, segunda, terca, quarta, quinta, sexta, sabado, domingo, sort_order)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        menu.id,
+        menu.title,
+        item.section,
+        item.item,
+        item.values.segunda,
+        item.values.terca,
+        item.values.quarta,
+        item.values.quinta,
+        item.values.sexta,
+        item.values.sabado,
+        item.values.domingo,
+        index,
+      ],
+    })),
+  )
+
+  if (statements.length > 0) {
+    await getDb().batch(statements, 'write')
+  }
+}
+
+const breakfastMenuDaySchema = z.object({
+  segunda: z.string().min(1),
+  terca: z.string().min(1),
+  quarta: z.string().min(1),
+  quinta: z.string().min(1),
+  sexta: z.string().min(1),
+  sabado: z.string().min(1),
+  domingo: z.string().min(1),
+})
+
+const technicalSheetSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  ingredients: z.string().trim().min(2).max(8000),
+  preparation: z.string().trim().min(2).max(8000),
+  photo_data_url: z.string().regex(/^data:image\/(png|jpeg|webp);base64/).max(2_000_000).nullable(),
+})
+function toBreakfastMenuItem(row: Record<string, unknown>) {
+  return {
+    id: Number(row.id),
+    menu_id: String(row.menu_id),
+    menu_title: String(row.menu_title),
+    section: String(row.section),
+    item: String(row.item),
+    values: {
+      segunda: String(row.segunda),
+      terca: String(row.terca),
+      quarta: String(row.quarta),
+      quinta: String(row.quinta),
+      sexta: String(row.sexta),
+      sabado: String(row.sabado),
+      domingo: String(row.domingo),
+    } satisfies Record<MenuDay, string>,
+    active: Boolean(Number(row.active)),
+    sort_order: Number(row.sort_order),
+  }
+}
+
+async function getBreakfastMenus() {
+  const result = await getDb().execute(`select id, menu_id, menu_title, section, item,
+      segunda, terca, quarta, quinta, sexta, sabado, domingo, active, sort_order
+    from breakfast_menu_items
+    where active = 1
+    order by menu_id, sort_order, id`)
+  const menus = new Map<string, { id: string; title: string; items: ReturnType<typeof toBreakfastMenuItem>[] }>()
+  for (const row of result.rows) {
+    const item = toBreakfastMenuItem(row as Record<string, unknown>)
+    const menu = menus.get(item.menu_id) ?? { id: item.menu_id, title: item.menu_title, items: [] }
+    menu.items.push(item)
+    menus.set(item.menu_id, menu)
+  }
+  return [...menus.values()]
+}
+function toTechnicalSheet(row: Record<string, unknown>) {
+  return {
+    id: Number(row.id),
+    name: String(row.name),
+    photo_data_url: row.photo_data_url ? String(row.photo_data_url) : null,
+    ingredients: String(row.ingredients),
+    preparation: String(row.preparation),
+    active: Boolean(Number(row.active)),
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+    created_by_name: row.created_by_name ? String(row.created_by_name) : null,
+  }
+}
+
+const technicalSheetSelect = `select s.id, s.name, s.photo_data_url, s.ingredients, s.preparation,
+  s.active, s.created_at, s.updated_at, u.name as created_by_name
+  from technical_sheets s
+  left join users u on u.id = s.created_by`
+
+async function getTechnicalSheets() {
+  const result = await getDb().execute(`${technicalSheetSelect} where s.active = 1 order by s.name collate nocase, s.id`)
+  return result.rows.map((row) => toTechnicalSheet(row as Record<string, unknown>))
+}
+
+async function getTechnicalSheet(id: number) {
+  const result = await getDb().execute({
+    sql: `${technicalSheetSelect} where s.id = ?`,
+    args: [id],
+  })
+  const row = result.rows[0]
+  return row ? toTechnicalSheet(row as Record<string, unknown>) : null
+}
+async function ensureColumn(table: string, column: string, sql: string) {
+  const columns = await getDb().execute(`pragma table_info(${table})`)
+  const exists = columns.rows.some((row) => {
+    const values = row as Record<string, unknown> & { [index: number]: unknown }
+    return values.name === column || values[1] === column
+  })
+
+  if (!exists) {
+    try {
+      await getDb().execute(sql)
+    } catch (error) {
+      const message = error instanceof Error ? error.message.toLowerCase() : ''
+      if (!message.includes('duplicate column')) throw error
+    }
+  }
+}
+
+function toPublicUser(row: Record<string, unknown>): AuthUser {
+  return {
+    id: Number(row.id),
+    name: String(row.name),
+    username: String(row.username),
+    role: row.role as Role,
+    active: Boolean(row.active),
+  }
+}
+
+async function sign(user: AuthUser) {
+  const secret = jwtSecretBytes()
+  return new SignJWT({ role: user.role, username: user.username })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setSubject(String(user.id))
+    .setIssuedAt()
+    .setExpirationTime('12h')
+    .sign(secret)
+}
+
+async function currentUser(event: Event): Promise<AuthUser | null> {
+  const auth = event.headers.authorization ?? event.headers.Authorization
+  const token = auth?.startsWith('Bearer ') ? auth.slice(7) : ''
+  if (!token) return null
+
+  try {
+    const secret = jwtSecretBytes()
+    const verified = await jwtVerify(token, secret)
+    const result = await getDb().execute({
+      sql: 'select id, name, username, role, active from users where id = ? and active = 1',
+      args: [Number(verified.payload.sub)],
+    })
+    const row = result.rows[0]
+    return row ? toPublicUser(row as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+function parseBody<T>(event: Event, schema: z.ZodType<T>) {
+  const raw = event.body ? JSON.parse(event.body) : {}
+  return schema.parse(raw)
+}
+
+function addOneHour(time: string) {
+  const [hours, minutes] = time.split(':').map(Number)
+  const date = new Date(2000, 0, 1, hours, minutes)
+  date.setHours(date.getHours() + 1)
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+function brazilNowIso() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date())
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+
+  return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}:${values.second}-03:00`
+}
+
+function brazilTodayIso() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date())
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+
+  return `${values.year}-${values.month}-${values.day}`
+}
+
+function eventUrl(event: Event) {
+  const rawUrl = event.rawUrl ?? `http://localhost${event.path}`
+  return new URL(rawUrl)
+}
+
+function routePath(event: Event) {
+  return event.path.replace(/^\/\.netlify\/functions\/api/, '').replace(/^\/api/, '') || '/'
+}
+
+async function requireUser(event: Event, role?: Role) {
+  const user = await currentUser(event)
+  if (!user) throw Object.assign(new Error('Sessao invalida.'), { statusCode: 401 })
+  if (role && user.role !== role) throw Object.assign(new Error('Acesso restrito.'), { statusCode: 403 })
+  return user
+}
+
+async function requireAnyRole(event: Event, roles: Role[]) {
+  const user = await currentUser(event)
+  if (!user) throw Object.assign(new Error('Sessao invalida.'), { statusCode: 401 })
+  if (!roles.includes(user.role)) throw Object.assign(new Error('Acesso restrito.'), { statusCode: 403 })
+  return user
+}
+
+
+function legacyProductCategory(category: string) {
+  return category.toLowerCase().includes('limpeza') ? 'limpeza' : 'alimentos'
+}
+
+async function getProducts() {
+  const result = await getDb().execute(
+    'select id, name, coalesce(category_name, category) as category, unit, observations, active, created_at from products where active = 1 order by coalesce(category_name, category), name',
+  )
+  return result.rows
+}
+
+async function getStockCategories() {
+  const result = await getDb().execute(
+    'select id, name, active, created_at from stock_categories where active = 1 order by name',
+  )
+  return result.rows
+}
+
+async function getInventoryCheckSectors() {
+  const result = await getDb().execute('select id, name, active, created_at from inventory_check_sectors where active = 1 order by name')
+  return result.rows
+}
+
+async function getInventoryCheckItems(date: string) {
+  const result = await getDb().execute({
+    sql: `select i.id, i.name, i.sector_id, s.name as sector_name, r.status, r.record_date as checked_date, i.active, i.created_at, coalesce(r.updated_at, i.updated_at) as updated_at
+      from inventory_check_items i
+      left join inventory_check_sectors s on s.id = i.sector_id and s.active = 1
+      left join inventory_check_records r on r.item_id = i.id and r.record_date = ?
+      where i.active = 1
+      order by coalesce(s.name, 'Sem setor'), i.name`,
+    args: [date],
+  })
+  return result.rows
+}
+
+async function getStockOrders(user: AuthUser, date?: string) {
+  const clauses: string[] = []
+  const args: Array<string | number> = []
+  if (user.role === 'colaborador') {
+    clauses.push('o.requested_by = ?')
+    args.push(user.id)
+  }
+  if (date) {
+    clauses.push("coalesce(o.requested_date, strftime('%Y-%m-%d', datetime(o.created_at, '-3 hours'))) = ?")
+    args.push(date)
+  }
+  const restriction = clauses.length > 0 ? `where ${clauses.join(' and ')}` : ''
+  const orders = await getDb().execute({
+    sql: `select o.id, o.requested_by, u.name as requested_by_name, coalesce(o.requested_date, strftime('%Y-%m-%d', datetime(o.created_at, '-3 hours'))) as requested_date, o.notes, o.status, o.created_at, o.updated_at
+      from stock_orders o
+      join users u on u.id = o.requested_by
+      ${restriction}
+      order by case o.status when 'pendente' then 0 when 'separado' then 1 else 2 end, o.id desc`,
+    args,
+  })
+  const orderIds = orders.rows.map((row) => Number(row.id))
+  if (orderIds.length === 0) return []
+
+  const placeholders = orderIds.map(() => '?').join(',')
+  const items = await getDb().execute({
+    sql: `select id, order_id, product_id, product_name, product_category, product_unit, quantity
+      from stock_order_items
+      where order_id in (${placeholders})
+      order by id`,
+    args: orderIds,
+  })
+  const itemsByOrder = new Map<number, unknown[]>()
+  for (const row of items.rows) {
+    const orderId = Number(row.order_id)
+    const current = itemsByOrder.get(orderId) ?? []
+    current.push(row)
+    itemsByOrder.set(orderId, current)
+  }
+
+  return orders.rows.map((row) => ({
+    ...(row as Record<string, unknown>),
+    items: itemsByOrder.get(Number(row.id)) ?? [],
+  }))
+}
+
+async function getTasks(date: string, user: AuthUser) {
+  const restriction = user.role === 'colaborador' ? 'and t.user_id = ?' : ''
+  const args = user.role === 'colaborador' ? [date, user.id] : [date]
+  const result = await getDb().execute({
+      sql: `select t.id, t.date, t.user_id, t.title, t.notes, t.priority, t.due_time, u.name as user_name,
+        c.completed_at, cu.name as completed_by_name
+      from tasks t
+      join users u on u.id = t.user_id
+      left join task_completions c on c.task_id = t.id
+      left join users cu on cu.id = c.completed_by
+      where t.date = ? ${restriction}
+      order by t.id desc`,
+    args,
+  })
+  return result.rows
+}
+
+async function getPendingTasks(untilDate: string, user: AuthUser) {
+  const restriction = user.role === 'colaborador' ? 'and t.user_id = ?' : ''
+  const args = user.role === 'colaborador' ? [untilDate, user.id] : [untilDate]
+  const result = await getDb().execute({
+    sql: `select t.id, t.date, t.user_id, t.title, t.notes, t.priority, t.due_time, u.name as user_name,
+        c.completed_at, cu.name as completed_by_name
+      from tasks t
+      join users u on u.id = t.user_id
+      left join task_completions c on c.task_id = t.id
+      left join users cu on cu.id = c.completed_by
+      where t.date <= ? and c.completed_at is null ${restriction}
+      order by t.date asc, coalesce(t.due_time, '23:59') asc, t.id desc`,
+    args,
+  })
+  return result.rows
+}
+
+async function getSchedules(date: string, user: AuthUser) {
+  const restriction = user.role === 'colaborador' ? 'and s.user_id = ?' : ''
+  const args = user.role === 'colaborador' ? [date, user.id] : [date]
+  const result = await getDb().execute({
+    sql: `select s.id, s.date, s.user_id, s.station_id, b.start_time as break_start,
+        b.end_time as break_end, u.name as user_name, st.name as station_name,
+        st.description as station_description
+      from daily_schedules s
+      join users u on u.id = s.user_id
+      join stations st on st.id = s.station_id
+      join breaks b on b.schedule_id = s.id
+      where s.date = ? ${restriction}
+      order by b.start_time, u.name`,
+    args,
+  })
+  return result.rows
+}
+
+export async function handler(event: Event) {
+  if (event.httpMethod === 'OPTIONS') return json(204, {})
+
+  try {
+    await ensureDb()
+    const path = routePath(event)
+    const url = eventUrl(event)
+
+    if (event.httpMethod === 'POST' && path === '/auth/login') {
+      const body = parseBody(
+        event,
+        z.object({
+          username: z.string().min(1),
+          pin: z.string().min(1),
+        }),
+      )
+      const result = await getDb().execute({
+        sql: 'select id, name, username, pin_hash, role, active from users where username = ? and active = 1',
+        args: [body.username],
+      })
+      const row = result.rows[0] as Record<string, unknown> | undefined
+      if (!row || !(await bcrypt.compare(body.pin, String(row.pin_hash)))) {
+        return json(401, { error: 'Usuário ou PIN inválido.' })
+      }
+      const user = toPublicUser(row)
+      return json(200, { token: await sign(user), user })
+    }
+
+    if (path === '/breakfast-menus' && event.httpMethod === 'GET') {
+      await requireUser(event)
+      return json(200, await getBreakfastMenus())
+    }
+
+    if (path === '/breakfast-menu-items' && event.httpMethod === 'POST') {
+      await requireUser(event, 'gestor')
+      const body = parseBody(
+        event,
+        z.object({
+          menu_id: z.string().min(2),
+          section: z.string().min(2),
+          item: z.string().min(1),
+          values: breakfastMenuDaySchema,
+        }),
+      )
+      const menuTitle = breakfastMenus.find((menu) => menu.id === body.menu_id)?.title ?? body.menu_id
+      const sortOrder = await getDb().execute({
+        sql: 'select coalesce(max(sort_order), 0) + 1 as next_order from breakfast_menu_items where menu_id = ?',
+        args: [body.menu_id],
+      })
+      const result = await getDb().execute({
+        sql: `insert into breakfast_menu_items
+          (menu_id, menu_title, section, item, segunda, terca, quarta, quinta, sexta, sabado, domingo, sort_order, updated_at)
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          returning id, menu_id, menu_title, section, item, segunda, terca, quarta, quinta, sexta, sabado, domingo, active, sort_order`,
+        args: [
+          body.menu_id,
+          menuTitle,
+          body.section.trim(),
+          body.item.trim(),
+          body.values.segunda.trim(),
+          body.values.terca.trim(),
+          body.values.quarta.trim(),
+          body.values.quinta.trim(),
+          body.values.sexta.trim(),
+          body.values.sabado.trim(),
+          body.values.domingo.trim(),
+          Number(sortOrder.rows[0]?.next_order ?? 1),
+          brazilNowIso(),
+        ],
+      })
+      return json(201, toBreakfastMenuItem(result.rows[0] as Record<string, unknown>))
+    }
+    const breakfastMenuItemMatch = path.match(/^\/breakfast-menu-items\/(\d+)$/)
+    if (breakfastMenuItemMatch && event.httpMethod === 'PUT') {
+      await requireUser(event, 'gestor')
+      const body = parseBody(
+        event,
+        z.object({
+          section: z.string().min(2),
+          item: z.string().min(1),
+          values: breakfastMenuDaySchema,
+          active: z.coerce.boolean(),
+        }),
+      )
+      const result = await getDb().execute({
+        sql: `update breakfast_menu_items
+          set section = ?, item = ?, segunda = ?, terca = ?, quarta = ?, quinta = ?, sexta = ?, sabado = ?, domingo = ?, active = ?, updated_at = ?
+          where id = ?
+          returning id, menu_id, menu_title, section, item, segunda, terca, quarta, quinta, sexta, sabado, domingo, active, sort_order`,
+        args: [
+          body.section.trim(),
+          body.item.trim(),
+          body.values.segunda.trim(),
+          body.values.terca.trim(),
+          body.values.quarta.trim(),
+          body.values.quinta.trim(),
+          body.values.sexta.trim(),
+          body.values.sabado.trim(),
+          body.values.domingo.trim(),
+          body.active ? 1 : 0,
+          brazilNowIso(),
+          Number(breakfastMenuItemMatch[1]),
+        ],
+      })
+      const row = result.rows[0]
+      if (!row) return json(404, { error: 'Item do cardápio não encontrado.' })
+      return json(200, toBreakfastMenuItem(row as Record<string, unknown>))
+    }
+
+    if (breakfastMenuItemMatch && event.httpMethod === 'DELETE') {
+      await requireUser(event, 'gestor')
+      await getDb().execute({
+        sql: 'update breakfast_menu_items set active = 0, updated_at = ? where id = ?',
+        args: [brazilNowIso(), Number(breakfastMenuItemMatch[1])],
+      })
+      return json(200, { ok: true })
+    }
+
+    if (path === '/technical-sheets') {
+      if (event.httpMethod === 'GET') {
+        await requireUser(event)
+        return json(200, await getTechnicalSheets())
+      }
+
+      if (event.httpMethod === 'POST') {
+        const actor = await requireUser(event, 'gestor')
+        const body = parseBody(event, technicalSheetSchema)
+        const result = await getDb().execute({
+          sql: `insert into technical_sheets (name, photo_data_url, ingredients, preparation, created_by, updated_at)
+            values (?, ?, ?, ?, ?, ?)
+            returning id`,
+          args: [body.name, body.photo_data_url, body.ingredients, body.preparation, actor.id, brazilNowIso()],
+        })
+        const sheet = await getTechnicalSheet(Number(result.rows[0]?.id))
+        return json(201, sheet)
+      }
+    }
+
+    const technicalSheetMatch = path.match(/^\/technical-sheets\/(\d+)$/)
+    if (technicalSheetMatch && event.httpMethod === 'PUT') {
+      await requireUser(event, 'gestor')
+      const body = parseBody(event, technicalSheetSchema.extend({ active: z.coerce.boolean() }))
+      const id = Number(technicalSheetMatch[1])
+      await getDb().execute({
+        sql: `update technical_sheets
+          set name = ?, photo_data_url = ?, ingredients = ?, preparation = ?, active = ?, updated_at = ?
+          where id = ?`,
+        args: [body.name, body.photo_data_url, body.ingredients, body.preparation, body.active ? 1 : 0, brazilNowIso(), id],
+      })
+      const sheet = await getTechnicalSheet(id)
+      if (!sheet) return json(404, { error: 'Ficha tecnica nao encontrada.' })
+      return json(200, sheet)
+    }
+
+    if (technicalSheetMatch && event.httpMethod === 'DELETE') {
+      await requireUser(event, 'gestor')
+      const id = Number(technicalSheetMatch[1])
+      const sheet = await getTechnicalSheet(id)
+      if (!sheet || !sheet.active) return json(404, { error: 'Ficha tecnica nao encontrada.' })
+      await getDb().execute({
+        sql: 'update technical_sheets set active = 0, updated_at = ? where id = ?',
+        args: [brazilNowIso(), id],
+      })
+      return json(200, { ok: true })
+    }
+    if (path === '/users') {
+      await requireUser(event, 'gestor')
+      if (event.httpMethod === 'GET') {
+        const result = await getDb().execute('select id, name, username, role, active from users where active = 1 order by name')
+        return json(200, result.rows.map((row) => toPublicUser(row as Record<string, unknown>)))
+      }
+      if (event.httpMethod === 'POST') {
+        const body = parseBody(
+          event,
+          z.object({
+            name: z.string().min(2),
+            username: z.string().min(2),
+            role: z.enum(['gestor', 'colaborador', 'estoquista']),
+            pin: z.string().min(4),
+          }),
+        )
+        const hash = await bcrypt.hash(body.pin, 10)
+        const result = await getDb().execute({
+          sql: 'insert into users (name, username, pin_hash, role) values (?, ?, ?, ?) returning id, name, username, role, active',
+          args: [body.name, body.username, hash, body.role],
+        })
+        return json(201, toPublicUser(result.rows[0] as Record<string, unknown>))
+      }
+    }
+
+    const userMatch = path.match(/^\/users\/(\d+)$/)
+    if (userMatch && event.httpMethod === 'PUT') {
+      await requireUser(event, 'gestor')
+      const body = parseBody(
+        event,
+        z.object({
+          name: z.string().min(2),
+          username: z.string().min(2),
+          role: z.enum(['gestor', 'colaborador', 'estoquista']),
+          active: z.coerce.boolean(),
+          pin: z.string().min(4).optional().or(z.literal('')),
+        }),
+      )
+      const id = Number(userMatch[1])
+      if (body.pin) {
+        const hash = await bcrypt.hash(body.pin, 10)
+        await getDb().execute({
+          sql: 'update users set name = ?, username = ?, role = ?, active = ?, pin_hash = ? where id = ?',
+          args: [body.name, body.username, body.role, body.active ? 1 : 0, hash, id],
+        })
+      } else {
+        await getDb().execute({
+          sql: 'update users set name = ?, username = ?, role = ?, active = ? where id = ?',
+          args: [body.name, body.username, body.role, body.active ? 1 : 0, id],
+        })
+      }
+      const result = await getDb().execute({
+        sql: 'select id, name, username, role, active from users where id = ?',
+        args: [id],
+      })
+      return json(200, toPublicUser(result.rows[0] as Record<string, unknown>))
+    }
+
+    if (userMatch && event.httpMethod === 'DELETE') {
+      const actor = await requireUser(event, 'gestor')
+      const id = Number(userMatch[1])
+      if (actor.id === id) {
+        return json(400, { error: 'Você não pode excluir o próprio usuário logado.' })
+      }
+      await getDb().execute({
+        sql: 'update users set active = 0 where id = ?',
+        args: [id],
+      })
+      return json(200, { ok: true })
+    }
+
+    if (path === '/stations') {
+      await requireUser(event, 'gestor')
+      if (event.httpMethod === 'GET') {
+        const result = await getDb().execute('select id, name, description, active from stations where active = 1 order by name')
+        return json(200, result.rows)
+      }
+      if (event.httpMethod === 'POST') {
+        const body = parseBody(event, z.object({ name: z.string().min(2), description: z.string().optional() }))
+        const result = await getDb().execute({
+          sql: 'insert into stations (name, description) values (?, ?) returning id, name, description, active',
+          args: [body.name, body.description ?? null],
+        })
+        return json(201, result.rows[0])
+      }
+    }
+
+    const stationMatch = path.match(/^\/stations\/(\d+)$/)
+    if (stationMatch && event.httpMethod === 'PUT') {
+      await requireUser(event, 'gestor')
+      const body = parseBody(
+        event,
+        z.object({
+          name: z.string().min(2),
+          description: z.string().optional(),
+          active: z.coerce.boolean(),
+        }),
+      )
+      const result = await getDb().execute({
+        sql: 'update stations set name = ?, description = ?, active = ? where id = ? returning id, name, description, active',
+        args: [body.name, body.description ?? null, body.active ? 1 : 0, Number(stationMatch[1])],
+      })
+      return json(200, result.rows[0])
+    }
+
+    if (stationMatch && event.httpMethod === 'DELETE') {
+      await requireUser(event, 'gestor')
+      await getDb().execute({
+        sql: 'update stations set active = 0 where id = ?',
+        args: [Number(stationMatch[1])],
+      })
+      return json(200, { ok: true })
+    }
+
+    if (path === '/stock-categories') {
+      await requireUser(event)
+      if (event.httpMethod === 'GET') {
+        return json(200, await getStockCategories())
+      }
+      if (event.httpMethod === 'POST') {
+        await requireAnyRole(event, ['gestor', 'estoquista'])
+        const body = parseBody(event, z.object({ name: z.string().min(2) }))
+        const result = await getDb().execute({
+          sql: 'insert into stock_categories (name) values (?) returning id, name, active, created_at',
+          args: [body.name.trim()],
+        })
+        return json(201, result.rows[0])
+      }
+    }
+
+    const stockCategoryMatch = path.match(/^\/stock-categories\/(\d+)$/)
+    if (stockCategoryMatch && event.httpMethod === 'PUT') {
+      await requireAnyRole(event, ['gestor', 'estoquista'])
+      const body = parseBody(event, z.object({ name: z.string().min(2), active: z.coerce.boolean() }))
+      const result = await getDb().execute({
+        sql: 'update stock_categories set name = ?, active = ? where id = ? returning id, name, active, created_at',
+        args: [body.name.trim(), body.active ? 1 : 0, Number(stockCategoryMatch[1])],
+      })
+      const row = result.rows[0]
+      if (!row) return json(404, { error: 'Categoria não encontrada.' })
+      return json(200, row)
+    }
+
+    if (stockCategoryMatch && event.httpMethod === 'DELETE') {
+      await requireAnyRole(event, ['gestor', 'estoquista'])
+      await getDb().execute({ sql: 'update stock_categories set active = 0 where id = ?', args: [Number(stockCategoryMatch[1])] })
+      return json(200, { ok: true })
+    }
+
+
+    if (path === '/products') {
+      await requireUser(event)
+      if (event.httpMethod === 'GET') {
+        return json(200, await getProducts())
+      }
+      if (event.httpMethod === 'POST') {
+        await requireAnyRole(event, ['gestor', 'estoquista'])
+        const body = parseBody(
+          event,
+          z.object({
+            name: z.string().min(2),
+            category: z.string().min(2),
+            unit: z.string().min(1),
+            observations: z.string().optional(),
+          }),
+        )
+        const result = await getDb().execute({
+          sql: 'insert into products (name, category, category_name, unit, observations) values (?, ?, ?, ?, ?) returning id, name, coalesce(category_name, category) as category, unit, observations, active, created_at',
+          args: [body.name, legacyProductCategory(body.category), body.category, body.unit, body.observations ?? null],
+        })
+        return json(201, result.rows[0])
+      }
+    }
+
+    const productMatch = path.match(/^\/products\/(\d+)$/)
+    if (productMatch && event.httpMethod === 'PUT') {
+      await requireAnyRole(event, ['gestor', 'estoquista'])
+      const body = parseBody(
+        event,
+        z.object({
+          name: z.string().min(2),
+          category: z.string().min(2),
+          unit: z.string().min(1),
+          observations: z.string().optional(),
+          active: z.coerce.boolean(),
+        }),
+      )
+      const result = await getDb().execute({
+        sql: 'update products set name = ?, category = ?, category_name = ?, unit = ?, observations = ?, active = ? where id = ? returning id, name, coalesce(category_name, category) as category, unit, observations, active, created_at',
+        args: [body.name, legacyProductCategory(body.category), body.category, body.unit, body.observations ?? null, body.active ? 1 : 0, Number(productMatch[1])],
+      })
+      const row = result.rows[0]
+      if (!row) return json(404, { error: 'Produto não encontrado.' })
+      return json(200, row)
+    }
+
+    if (productMatch && event.httpMethod === 'DELETE') {
+      await requireAnyRole(event, ['gestor', 'estoquista'])
+      await getDb().execute({ sql: 'update products set active = 0 where id = ?', args: [Number(productMatch[1])] })
+      return json(200, { ok: true })
+    }
+
+    if (path === '/inventory-check-sectors') {
+      await requireUser(event, 'gestor')
+      if (event.httpMethod === 'GET') {
+        return json(200, await getInventoryCheckSectors())
+      }
+      if (event.httpMethod === 'POST') {
+        const body = parseBody(event, z.object({ name: z.string().min(2) }))
+        const result = await getDb().execute({
+          sql: 'insert into inventory_check_sectors (name, active) values (?, 1) on conflict(name) do update set active = 1 returning id, name, active, created_at',
+          args: [body.name.trim()],
+        })
+        return json(201, result.rows[0])
+      }
+    }
+
+    const inventoryCheckSectorMatch = path.match(/^\/inventory-check-sectors\/(\d+)$/)
+    if (inventoryCheckSectorMatch && event.httpMethod === 'PUT') {
+      await requireUser(event, 'gestor')
+      const body = parseBody(event, z.object({ name: z.string().min(2), active: z.coerce.boolean() }))
+      const result = await getDb().execute({
+        sql: 'update inventory_check_sectors set name = ?, active = ? where id = ? returning id, name, active, created_at',
+        args: [body.name.trim(), body.active ? 1 : 0, Number(inventoryCheckSectorMatch[1])],
+      })
+      const row = result.rows[0]
+      if (!row) return json(404, { error: 'Setor não encontrado.' })
+      return json(200, row)
+    }
+
+    if (inventoryCheckSectorMatch && event.httpMethod === 'DELETE') {
+      await requireUser(event, 'gestor')
+      await getDb().execute({ sql: 'update inventory_check_sectors set active = 0 where id = ?', args: [Number(inventoryCheckSectorMatch[1])] })
+      return json(200, { ok: true })
+    }
+
+    if (path === '/inventory-check-items') {
+      await requireUser(event, 'gestor')
+      if (event.httpMethod === 'GET') {
+        const date = url.searchParams.get('date') ?? brazilTodayIso()
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(400, { error: 'Data inválida.' })
+        return json(200, await getInventoryCheckItems(date))
+      }
+      if (event.httpMethod === 'POST') {
+        const body = parseBody(event, z.object({ name: z.string().min(2), sector_id: z.number().int().positive().nullable().optional() }))
+        const result = await getDb().execute({
+          sql: 'insert into inventory_check_items (name, sector_id, updated_at) values (?, ?, ?) returning id, name, sector_id, null as sector_name, null as status, null as checked_date, active, created_at, updated_at',
+          args: [body.name.trim(), body.sector_id ?? null, brazilNowIso()],
+        })
+        return json(201, result.rows[0])
+      }
+    }
+
+    const inventoryCheckItemMatch = path.match(/^\/inventory-check-items\/(\d+)$/)
+    if (inventoryCheckItemMatch && event.httpMethod === 'PUT') {
+      await requireUser(event, 'gestor')
+      const body = parseBody(event, z.object({ name: z.string().min(2), sector_id: z.number().int().positive().nullable().optional(), active: z.coerce.boolean() }))
+      const result = await getDb().execute({
+        sql: 'update inventory_check_items set name = ?, sector_id = ?, active = ?, updated_at = ? where id = ? returning id, name, sector_id, null as sector_name, null as status, null as checked_date, active, created_at, updated_at',
+        args: [body.name.trim(), body.sector_id ?? null, body.active ? 1 : 0, brazilNowIso(), Number(inventoryCheckItemMatch[1])],
+      })
+      const row = result.rows[0]
+      if (!row) return json(404, { error: 'Item de conferência não encontrado.' })
+      return json(200, row)
+    }
+
+    if (inventoryCheckItemMatch && event.httpMethod === 'DELETE') {
+      await requireUser(event, 'gestor')
+      await getDb().execute({
+        sql: 'update inventory_check_items set active = 0, updated_at = ? where id = ?',
+        args: [brazilNowIso(), Number(inventoryCheckItemMatch[1])],
+      })
+      return json(200, { ok: true })
+    }
+
+    const inventoryCheckStatusMatch = path.match(/^\/inventory-check-items\/(\d+)\/status$/)
+    if (inventoryCheckStatusMatch && event.httpMethod === 'PUT') {
+      const actor = await requireUser(event, 'gestor')
+      const body = parseBody(
+        event,
+        z.object({
+          status: z.enum(['ok', 'pedir', 'produzir']),
+          date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        }),
+      )
+      const itemId = Number(inventoryCheckStatusMatch[1])
+      const exists = await getDb().execute({ sql: 'select id from inventory_check_items where id = ? and active = 1', args: [itemId] })
+      if (exists.rows.length === 0) return json(404, { error: 'Item de conferência não encontrado.' })
+      await getDb().execute({
+        sql: `insert into inventory_check_records (item_id, record_date, status, checked_by, updated_at)
+          values (?, ?, ?, ?, ?)
+          on conflict(item_id, record_date) do update set status = excluded.status, checked_by = excluded.checked_by, updated_at = excluded.updated_at`,
+        args: [itemId, body.date, body.status, actor.id, brazilNowIso()],
+      })
+      const rows = await getInventoryCheckItems(body.date)
+      return json(200, rows.find((row) => Number(row.id) === itemId))
+    }
+
+
+    if (path === '/stock-orders/pending-count' && event.httpMethod === 'GET') {
+      await requireAnyRole(event, ['gestor', 'estoquista'])
+      const result = await getDb().execute("select count(*) as total from stock_orders where status = 'pendente'")
+      return json(200, { count: Number(result.rows[0]?.total ?? 0) })
+    }
+
+    if (path === '/stock-orders') {
+      const user = await requireUser(event)
+      if (event.httpMethod === 'GET') {
+        const date = url.searchParams.get('date') ?? undefined
+        if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(400, { error: 'Data invalida.' })
+        return json(200, await getStockOrders(user, date))
+      }
+      if (event.httpMethod === 'POST') {
+        if (user.role !== 'colaborador') return json(403, { error: 'Somente colaboradores podem criar pedidos.' })
+        const body = parseBody(
+          event,
+          z.object({
+            date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+            notes: z.string().optional(),
+            items: z.array(z.object({ product_id: z.number().int().positive(), quantity: z.string().min(1) })).min(1),
+          }),
+        )
+        const productIds = [...new Set(body.items.map((item) => item.product_id))]
+        const placeholders = productIds.map(() => '?').join(',')
+        const products = await getDb().execute({
+          sql: `select id, name, coalesce(category_name, category) as category, unit, observations from products where active = 1 and id in (${placeholders})`,
+          args: productIds,
+        })
+        const productsById = new Map(products.rows.map((row) => [Number(row.id), row]))
+        if (productsById.size !== productIds.length) {
+          return json(400, { error: 'Um ou mais produtos não estao disponiveis.' })
+        }
+
+        const order = await getDb().execute({
+          sql: 'insert into stock_orders (requested_by, requested_date, notes, created_at, updated_at) values (?, ?, ?, ?, ?) returning id',
+          args: [user.id, body.date, body.notes ?? null, brazilNowIso(), brazilNowIso()],
+        })
+        const orderId = Number(order.rows[0].id)
+        await getDb().batch(
+          body.items.map((item) => {
+            const product = productsById.get(item.product_id) as Record<string, unknown>
+            return {
+              sql: 'insert into stock_order_items (order_id, product_id, product_name, product_category, product_unit, quantity) values (?, ?, ?, ?, ?, ?)',
+              args: [orderId, item.product_id, String(product.name), String(product.category), String(product.unit), item.quantity],
+            }
+          }),
+          'write',
+        )
+        const orders = await getStockOrders(user)
+        return json(201, orders.find((item) => Number(item.id) === orderId))
+      }
+    }
+
+    const stockStatusMatch = path.match(/^\/stock-orders\/(\d+)\/status$/)
+    if (stockStatusMatch && event.httpMethod === 'PUT') {
+      const user = await requireAnyRole(event, ['gestor', 'estoquista'])
+      const body = parseBody(event, z.object({ status: z.enum(['pendente', 'separado', 'entregue']) }))
+      const orderId = Number(stockStatusMatch[1])
+      await getDb().execute({
+        sql: 'update stock_orders set status = ?, updated_at = ? where id = ?',
+        args: [body.status, brazilNowIso(), orderId],
+      })
+      const orders = await getStockOrders(user)
+      const order = orders.find((item) => Number(item.id) === orderId)
+      if (!order) return json(404, { error: 'Pedido não encontrado.' })
+      return json(200, order)
+    }
+
+    if (path === '/notices') {
+      await requireUser(event)
+      if (event.httpMethod === 'GET') {
+        const result = await getDb().execute({
+          sql: `select id, title, body, pdf_name, pdf_data_url, expires_at, created_at
+            from notices
+            where active = 1 and (expires_at is null or expires_at >= ?)
+            order by id desc`,
+          args: [brazilTodayIso()],
+        })
+        return json(200, result.rows)
+      }
+      if (event.httpMethod === 'POST') {
+        await requireUser(event, 'gestor')
+        const body = parseBody(
+          event,
+          z.object({
+            title: z.string().min(2),
+            body: z.string().optional(),
+            pdf_name: z.string().optional(),
+            pdf_data_url: z.string().max(4_500_000).optional(),
+            expires_at: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal('')),
+          }),
+        )
+        if (body.pdf_data_url && !body.pdf_data_url.startsWith('data:application/pdf;')) {
+          return json(400, { error: 'Anexo inválido. Envie um PDF.' })
+        }
+        const result = await getDb().execute({
+          sql: `insert into notices (title, body, pdf_name, pdf_data_url, expires_at)
+            values (?, ?, ?, ?, ?)
+            returning id, title, body, pdf_name, pdf_data_url, expires_at, created_at`,
+          args: [body.title, body.body ?? null, body.pdf_name ?? null, body.pdf_data_url ?? null, body.expires_at || null],
+        })
+        return json(201, result.rows[0])
+      }
+    }
+
+    const noticeMatch = path.match(/^\/notices\/(\d+)$/)
+    if (noticeMatch && event.httpMethod === 'PUT') {
+      await requireUser(event, 'gestor')
+      const body = parseBody(
+        event,
+        z.object({
+          title: z.string().min(2),
+          body: z.string().optional(),
+          pdf_name: z.string().optional(),
+          pdf_data_url: z.string().max(4_500_000).optional(),
+          expires_at: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal('')),
+        }),
+      )
+      if (body.pdf_data_url && !body.pdf_data_url.startsWith('data:application/pdf;')) {
+        return json(400, { error: 'Anexo inválido. Envie um PDF.' })
+      }
+      const noticeId = Number(noticeMatch[1])
+      const hasNewPdf = body.pdf_data_url !== undefined
+      const result = await getDb().execute({
+        sql: hasNewPdf
+          ? `update notices
+            set title = ?, body = ?, pdf_name = ?, pdf_data_url = ?, expires_at = ?
+            where id = ? and active = 1
+            returning id, title, body, pdf_name, pdf_data_url, expires_at, created_at`
+          : `update notices
+            set title = ?, body = ?, expires_at = ?
+            where id = ? and active = 1
+            returning id, title, body, pdf_name, pdf_data_url, expires_at, created_at`,
+        args: hasNewPdf
+          ? [body.title, body.body ?? null, body.pdf_name ?? null, body.pdf_data_url ?? null, body.expires_at || null, noticeId]
+          : [body.title, body.body ?? null, body.expires_at || null, noticeId],
+      })
+      const row = result.rows[0]
+      if (!row) return json(404, { error: 'Noticia não encontrada.' })
+      return json(200, row)
+    }
+
+    if (noticeMatch && event.httpMethod === 'DELETE') {
+      await requireUser(event, 'gestor')
+      await getDb().execute({
+        sql: 'update notices set active = 0 where id = ?',
+        args: [Number(noticeMatch[1])],
+      })
+      return json(200, { ok: true })
+    }
+
+    if (path === '/schedules') {
+      const user = await requireUser(event)
+      if (event.httpMethod === 'GET') {
+        const date = url.searchParams.get('date') ?? brazilTodayIso()
+        return json(200, {
+          date,
+          schedules: await getSchedules(date, user),
+          tasks: await getTasks(date, user),
+        })
+      }
+      if (event.httpMethod === 'POST') {
+        await requireUser(event, 'gestor')
+        const body = parseBody(
+          event,
+          z.object({
+            date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+            user_id: z.number().int().positive(),
+            station_id: z.number().int().positive(),
+            break_start: z.string().regex(/^\d{2}:\d{2}$/),
+          }),
+        )
+        const breakEnd = addOneHour(body.break_start)
+        const result = await getDb().execute({
+          sql: `insert into daily_schedules (date, user_id, station_id)
+            values (?, ?, ?)
+            on conflict(date, user_id) do update set station_id = excluded.station_id
+            returning id`,
+          args: [body.date, body.user_id, body.station_id],
+        })
+        const scheduleId = Number(result.rows[0].id)
+        await getDb().execute({
+          sql: `insert into breaks (schedule_id, start_time, end_time)
+            values (?, ?, ?)
+            on conflict(schedule_id) do update set start_time = excluded.start_time, end_time = excluded.end_time`,
+          args: [scheduleId, body.break_start, breakEnd],
+        })
+        const rows = await getSchedules(body.date, await requireUser(event, 'gestor'))
+        return json(201, rows.find((row) => Number(row.id) === scheduleId))
+      }
+    }
+
+    const scheduleMatch = path.match(/^\/schedules\/(\d+)$/)
+    if (scheduleMatch && event.httpMethod === 'DELETE') {
+      await requireUser(event, 'gestor')
+      const id = Number(scheduleMatch[1])
+      await getDb().execute({ sql: 'delete from breaks where schedule_id = ?', args: [id] })
+      await getDb().execute({ sql: 'delete from daily_schedules where id = ?', args: [id] })
+      return json(200, { ok: true })
+    }
+
+    if (path === '/tasks') {
+      const user = await requireUser(event)
+      if (event.httpMethod === 'GET') {
+        const date = url.searchParams.get('date') ?? brazilTodayIso()
+        return json(200, await getTasks(date, user))
+      }
+      if (event.httpMethod === 'POST') {
+        await requireUser(event, 'gestor')
+        const body = parseBody(
+          event,
+          z.object({
+            date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+            user_id: z.number().int().positive(),
+            title: z.string().min(2),
+            notes: z.string().optional(),
+            priority: z.enum(['baixa', 'normal', 'alta', 'urgente']).default('normal'),
+            due_time: z.string().regex(/^\d{2}:\d{2}$/).optional().or(z.literal('')),
+          }),
+        )
+        const result = await getDb().execute({
+          sql: 'insert into tasks (date, user_id, title, notes, priority, due_time) values (?, ?, ?, ?, ?, ?) returning id',
+          args: [body.date, body.user_id, body.title, body.notes ?? null, body.priority, body.due_time || null],
+        })
+        const tasks = await getTasks(body.date, await requireUser(event, 'gestor'))
+        return json(201, tasks.find((task) => Number(task.id) === Number(result.rows[0].id)))
+      }
+    }
+
+    if (path === '/tasks/pending' && event.httpMethod === 'GET') {
+      const user = await requireUser(event)
+      const date = url.searchParams.get('date') ?? brazilTodayIso()
+      return json(200, await getPendingTasks(date, user))
+    }
+
+    const taskEditMatch = path.match(/^\/tasks\/(\d+)$/)
+    if (taskEditMatch && event.httpMethod === 'PUT') {
+      await requireUser(event, 'gestor')
+      const body = parseBody(
+        event,
+        z.object({
+          date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          user_id: z.number().int().positive(),
+          title: z.string().min(2),
+          notes: z.string().optional(),
+          priority: z.enum(['baixa', 'normal', 'alta', 'urgente']),
+          due_time: z.string().regex(/^\d{2}:\d{2}$/).optional().or(z.literal('')),
+        }),
+      )
+      const taskId = Number(taskEditMatch[1])
+      await getDb().execute({
+        sql: 'update tasks set date = ?, user_id = ?, title = ?, notes = ?, priority = ?, due_time = ? where id = ?',
+        args: [body.date, body.user_id, body.title, body.notes ?? null, body.priority, body.due_time || null, taskId],
+      })
+      const tasks = await getTasks(body.date, await requireUser(event, 'gestor'))
+      return json(200, tasks.find((task) => Number(task.id) === taskId))
+    }
+
+    if (taskEditMatch && event.httpMethod === 'DELETE') {
+      await requireUser(event, 'gestor')
+      const taskId = Number(taskEditMatch[1])
+      await getDb().execute({ sql: 'delete from task_completions where task_id = ?', args: [taskId] })
+      await getDb().execute({ sql: 'delete from tasks where id = ?', args: [taskId] })
+      return json(200, { ok: true })
+    }
+
+    const completeMatch = path.match(/^\/tasks\/(\d+)\/complete$/)
+    if (completeMatch && event.httpMethod === 'POST') {
+      const user = await requireUser(event)
+      const taskId = Number(completeMatch[1])
+      const task = await getDb().execute({ sql: 'select date, user_id from tasks where id = ?', args: [taskId] })
+      const row = task.rows[0]
+      if (!row) return json(404, { error: 'Tarefa não encontrado.' })
+      if (user.role === 'colaborador' && Number(row.user_id) !== user.id) {
+        return json(403, { error: 'Este tarefa pertence a outro colaborador.' })
+      }
+      await getDb().execute({
+        sql: `insert into task_completions (task_id, completed_by)
+          values (?, ?)
+          on conflict(task_id) do update set completed_by = excluded.completed_by, completed_at = current_timestamp`,
+        args: [taskId, user.id],
+      })
+      const tasks = await getTasks(String(row.date), user.role === 'gestor' ? user : user)
+      return json(200, tasks.find((item) => Number(item.id) === taskId))
+    }
+
+    return json(404, { error: 'Rota não encontrada.' })
+  } catch (error) {
+    const statusCode = typeof error === 'object' && error && 'statusCode' in error ? Number(error.statusCode) : 400
+    const message = error instanceof Error ? error.message : 'Erro inesperado.'
+    return json(statusCode, { error: message })
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
