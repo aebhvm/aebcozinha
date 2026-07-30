@@ -36,7 +36,6 @@
     "globals": "^17.6.0",
     "jsdom": "^29.1.1",
     "localtunnel": "^2.0.2",
-    "netlify-cli": "^26.0.1",
     "tsx": "^4.21.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
