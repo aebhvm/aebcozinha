@@ -6,7 +6,7 @@ Aplicativo web responsivo para criar escalas diarias de cozinha, controlar praca
 
 - React + Vite + TypeScript
 - Netlify Functions
-- SQLite remoto via Turso/libSQL
+- PostgreSQL serverless via Neon
 
 ## Rodando localmente
 
@@ -26,22 +26,21 @@ Em um banco vazio, configure `INITIAL_ADMIN_PIN` com um PIN numerico de 4 a 12 d
 
 ## Acesso fora do mesmo Wi-Fi
 
-`localhost` e IP local funcionam apenas no computador ou na mesma rede. Para usar de qualquer lugar, publique o projeto no Netlify e configure o banco Turso/libSQL nas variaveis de ambiente abaixo. Um tunel publico local pode ser usado para testes temporarios, mas nao substitui o deploy.
+`localhost` e IP local funcionam apenas no computador ou na mesma rede. Para usar de qualquer lugar, publique o projeto no Netlify e configure o banco Neon nas variaveis de ambiente abaixo. Um tunel publico local pode ser usado para testes temporarios, mas nao substitui o deploy.
 
 ## Variaveis de ambiente
 
 Configure no Netlify:
 
 ```bash
-TURSO_DATABASE_URL=libsql://...
-TURSO_AUTH_TOKEN=...
+DATABASE_URL=postgresql://...
 JWT_SECRET=gere-um-segredo-aleatorio-com-pelo-menos-32-caracteres
 INITIAL_ADMIN_PIN=
 INITIAL_STOCKKEEPER_PIN=
 ALLOWED_ORIGIN=https://escala-cozinha-aebvmhotel1.netlify.app
 ```
 
-Para desenvolvimento sem Turso, a API usa `file:local-cozinha.db`.
+O valor de `DATABASE_URL` deve ser o connection string do Neon e nunca deve ser commitado no repositorio.
 
 ## Scripts
 
