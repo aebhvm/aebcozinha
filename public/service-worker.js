@@ -1,4 +1,4 @@
-const CACHE_NAME = 'escala-cozinha-shell-v2'
+const CACHE_NAME = 'escala-cozinha-shell-v3-logo'
 const APP_SHELL = '/'
 
 self.addEventListener('install', (event) => {
