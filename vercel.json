@@ -5,6 +5,10 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/api/(.*)",
+      "destination": "/api/relay?path=$1"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
