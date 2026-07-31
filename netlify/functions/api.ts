@@ -42,8 +42,9 @@ type Event = {
 }
 
 type DbStatement = string | { sql: string; args?: unknown[] }
+type DbRow = Record<string, unknown>
 type Db = {
-  execute: (statement: DbStatement) => Promise<{ rows: Record<string, unknown>[] }>
+  execute: (statement: DbStatement) => Promise<{ rows: DbRow[] }>
   batch: (statements: DbStatement[], mode?: string) => Promise<void>
 }
 
@@ -79,7 +80,7 @@ function getDb() {
       const query = typeof statement === 'string' ? statement : statement.sql
       const args = typeof statement === 'string' ? [] : statement.args ?? []
       const rows = await sql.query(convertPlaceholders(query), args)
-      return { rows: rows as Record<string, unknown>[] }
+      return { rows: rows as DbRow[] }
     }
     db = {
       execute,
@@ -621,7 +622,9 @@ async function getInventoryCheckItems(date: string) {
   return result.rows
 }
 
-async function getStockOrders(user: AuthUser, date?: string) {
+type StockOrder = DbRow & { id?: unknown; items: unknown[] }
+
+async function getStockOrders(user: AuthUser, date?: string): Promise<StockOrder[]> {
   const clauses: string[] = []
   const args: Array<string | number> = []
   if (user.role === 'colaborador') {
@@ -1476,9 +1479,6 @@ export async function handler(event: Event) {
     return json(statusCode, { error: message })
   }
 }
-
-
-
 
 
 
