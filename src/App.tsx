@@ -24,7 +24,7 @@ import {
   Users,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent, ReactNode } from 'react'
 import {
   Link,
@@ -2498,7 +2498,7 @@ function WorkerOrdersPage({ session, onLogout }: { session: Session; onLogout: (
   const [orderDate, setOrderDate] = useState(todayIso())
   const [error, setError] = useState('')
 
-  async function load() {
+  const load = useCallback(async () => {
     const [productsPayload, categoriesPayload, ordersPayload] = await Promise.all([
       api.products(),
       api.stockCategories(),
@@ -2507,11 +2507,11 @@ function WorkerOrdersPage({ session, onLogout }: { session: Session; onLogout: (
     setProducts(productsPayload)
     setCategories(categoriesPayload)
     setOrders(ordersPayload)
-  }
+  }, [orderDate])
 
   useEffect(() => {
     void load()
-  }, [orderDate])
+  }, [load])
 
   const visibleProducts = useMemo(
     () => products.filter((product) => category === 'todas' || product.category === category),
@@ -2804,7 +2804,6 @@ function NoticeList({
 }
 
 export default App
-
 
 
 
