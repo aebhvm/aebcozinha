@@ -2,7 +2,9 @@ import { neon } from '@neondatabase/serverless'
 import bcrypt from 'bcryptjs'
 import { SignJWT, jwtVerify } from 'jose'
 import { z } from 'zod'
-import { breakfastMenus, type MenuDay } from '../../src/menuData'
+import { breakfastMenus, type MenuDay } from '../../src/menuData.js'
+
+declare const process: { env: Record<string, string | undefined> }
 
 type Role = 'gestor' | 'colaborador' | 'estoquista'
 
@@ -1479,7 +1481,6 @@ export async function handler(event: Event) {
     return json(statusCode, { error: message })
   }
 }
-
 
 
 
