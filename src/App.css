@@ -1,3 +1,26 @@
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+html,
+body {
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 .install-app-prompt {
   position: fixed;
   right: 16px;
@@ -146,6 +169,7 @@
 
 .app-shell {
   min-height: 100svh;
+  min-width: 0;
   display: grid;
   grid-template-columns: 260px 1fr;
   background: var(--surface);
@@ -207,6 +231,8 @@ button {
 }
 
 .content {
+  min-width: 0;
+  max-width: 100%;
   padding: 28px;
   display: grid;
   gap: 22px;
@@ -312,6 +338,8 @@ button {
 }
 
 .panel {
+  min-width: 0;
+  max-width: 100%;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -748,6 +776,7 @@ button:disabled {
 .stock-count-entry-form label,
 .stock-count-entry-form .product-search {
   min-width: 0;
+  max-width: 100%;
 }
 
 .stock-count-actions {
