@@ -542,7 +542,7 @@ function Shell({
               <ShoppingCart size={19} /> Meus pedidos
             </Link>
             <Link to="/colaborador/contagem-insumos" onClick={closeSidebar}>
-              <ClipboardList size={19} /> Entradas e saídas
+              <ClipboardList size={19} /> Saídas e desperdício
             </Link>
           </nav>
         )}
@@ -1629,8 +1629,8 @@ function formatStockQuantity(value: number) {
 }
 
 const stockMovementLabels: Record<StockMovementType, string> = {
-  entrada: 'Entrada',
   saida: 'Saída',
+  desperdicio: 'Desperdício',
 }
 
 function StockCountPage({ session, onLogout }: { session: Session; onLogout: () => void }) {
@@ -1639,7 +1639,8 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
   const [movements, setMovements] = useState<StockMovement[]>([])
   const [movementDate, setMovementDate] = useState(todayIso())
   const [movementTypeFilter, setMovementTypeFilter] = useState<'todos' | StockMovementType>('todos')
-  const [movementForm, setMovementForm] = useState({ product_id: '', movement_type: 'entrada' as StockMovementType, quantity: '', notes: '' })
+  const [movementForm, setMovementForm] = useState({ product_id: '', movement_type: 'saida' as StockMovementType, quantity: '', notes: '' })
+  const [editingMovementId, setEditingMovementId] = useState<number | null>(null)
   const [productSearch, setProductSearch] = useState('')
   const [productForm, setProductForm] = useState({ name: '', category: '', unit: '', observations: '' })
   const [loading, setLoading] = useState(true)
@@ -1690,6 +1691,39 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
     setProductSearch(product.name)
   }
 
+  function resetMovementForm() {
+    setEditingMovementId(null)
+    setMovementForm({ product_id: '', movement_type: 'saida', quantity: '', notes: '' })
+    setProductSearch('')
+  }
+
+  function editMovement(movement: StockMovement) {
+    setEditingMovementId(movement.id)
+    setMovementForm({
+      product_id: String(movement.product_id),
+      movement_type: movement.movement_type,
+      quantity: String(movement.quantity),
+      notes: movement.notes ?? '',
+    })
+    setProductSearch(movement.product_name)
+    setError('')
+    setSuccess('')
+    document.querySelector('.stock-count-layout')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  async function deleteMovement(movement: StockMovement) {
+    if (!window.confirm(`Excluir a movimentação de ${movement.product_name}? Ela será inativada e deixará de aparecer na lista.`)) return
+    setError('')
+    try {
+      await api.deleteStockMovement(movement.id)
+      if (editingMovementId === movement.id) resetMovementForm()
+      setSuccess('Movimentação excluída com sucesso.')
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao excluir movimentação.')
+    }
+  }
+
   async function submitMovement(event: FormEvent) {
     event.preventDefault()
     setError('')
@@ -1702,15 +1736,20 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
     }
     setSavingMovement(true)
     try {
-      await api.createStockMovement({
+      const payload = {
         product_id: productId,
         movement_type: movementForm.movement_type,
         quantity,
         date: movementDate,
         notes: movementForm.notes.trim() || undefined,
-      })
-      setMovementForm((current) => ({ ...current, quantity: '', notes: '' }))
-      setSuccess(`${stockMovementLabels[movementForm.movement_type]} registrada com sucesso.`)
+      }
+      if (editingMovementId) {
+        await api.updateStockMovement(editingMovementId, payload)
+      } else {
+        await api.createStockMovement(payload)
+      }
+      resetMovementForm()
+      setSuccess(editingMovementId ? 'Movimentação atualizada com sucesso.' : `${stockMovementLabels[movementForm.movement_type]} registrada com sucesso.`)
       await load()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao registrar movimentação.')
@@ -1744,7 +1783,7 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
   }
 
   return (
-    <Shell session={session} onLogout={onLogout} title="Contagem de insumos" subtitle="Registre entradas e saídas usando os produtos dos pedidos.">
+    <Shell session={session} onLogout={onLogout} title="Contagem de insumos" subtitle="Registre saídas e desperdícios usando os produtos dos pedidos.">
       <section className="grid two stock-count-layout">
         <div className="panel">
           <div className="panel-title-row">
@@ -1761,8 +1800,8 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
             <label>
               Tipo
               <select value={movementForm.movement_type} onChange={(event) => setMovementForm({ ...movementForm, movement_type: event.target.value as StockMovementType })}>
-                <option value="entrada">Entrada</option>
-                <option value="saida">Saída</option>
+                <option value="saida">Saídas</option>
+                <option value="desperdicio">Desperdício</option>
               </select>
             </label>
             <label>
@@ -1809,9 +1848,12 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
             </label>
             {error && <p className="error">{error}</p>}
             {success && <p className="success-message">{success}</p>}
-            <button className="primary" disabled={savingMovement || !movementForm.product_id || !movementForm.quantity.trim()}>
-              {savingMovement ? 'Salvando...' : `Registrar ${stockMovementLabels[movementForm.movement_type].toLowerCase()}`}
-            </button>
+            <div className="row-actions">
+              {editingMovementId && <button type="button" className="secondary" onClick={resetMovementForm}>Cancelar edição</button>}
+              <button className="primary" disabled={savingMovement || !movementForm.product_id || !movementForm.quantity.trim()}>
+                {savingMovement ? 'Salvando...' : editingMovementId ? 'Salvar alteração' : `Registrar ${stockMovementLabels[movementForm.movement_type].toLowerCase()}`}
+              </button>
+            </div>
           </form>
         </div>
 
@@ -1852,17 +1894,31 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
             <h2>Movimentações de {formatDate(movementDate)}</h2>
             <div className="segmented-control movement-filter-control" aria-label="Filtrar movimentações">
               <button type="button" className={movementTypeFilter === 'todos' ? 'active' : ''} onClick={() => setMovementTypeFilter('todos')}>Todas</button>
-              <button type="button" className={movementTypeFilter === 'entrada' ? 'active' : ''} onClick={() => setMovementTypeFilter('entrada')}>Entradas</button>
               <button type="button" className={movementTypeFilter === 'saida' ? 'active' : ''} onClick={() => setMovementTypeFilter('saida')}>Saídas</button>
+              <button type="button" className={movementTypeFilter === 'desperdicio' ? 'active' : ''} onClick={() => setMovementTypeFilter('desperdicio')}>Desperdício</button>
             </div>
           </div>
         </div>
         {loading ? <p className="empty">Carregando registros...</p> : visibleMovements.length === 0 ? <p className="empty">Nenhum registro encontrado para este filtro.</p> : (
           <div className="stock-count-table-wrap">
             <table className="stock-count-table stock-movement-table">
-              <thead><tr><th>Tipo</th><th>Produto</th><th>Quantidade</th><th>Unidade de medida</th><th>Responsável</th></tr></thead>
+              <thead><tr><th>Tipo</th><th>Produto</th><th>Quantidade</th><th>Unidade de medida</th><th>Responsável</th><th>Ações</th></tr></thead>
               <tbody>
-                {visibleMovements.map((movement) => <tr key={movement.id}><td><span className={`pill movement-${movement.movement_type}`}>{stockMovementLabels[movement.movement_type]}</span></td><td>{movement.product_name}</td><td>{formatStockQuantity(movement.quantity)}</td><td>{movement.unit}</td><td>{movement.created_by_name}</td></tr>)}
+                {visibleMovements.map((movement) => (
+                  <tr key={movement.id}>
+                    <td><span className={`pill movement-${movement.movement_type}`}>{stockMovementLabels[movement.movement_type]}</span></td>
+                    <td>{movement.product_name}</td>
+                    <td>{formatStockQuantity(movement.quantity)}</td>
+                    <td>{movement.unit}</td>
+                    <td>{movement.created_by_name}</td>
+                    <td>
+                      <div className="row-actions icon-actions stock-movement-actions">
+                        <button type="button" className="secondary icon-button" onClick={() => editMovement(movement)} aria-label={`Editar movimentação de ${movement.product_name}`} title="Editar"><Edit3 size={16} /></button>
+                        <button type="button" className="danger-button icon-button" onClick={() => void deleteMovement(movement)} aria-label={`Excluir movimentação de ${movement.product_name}`} title="Excluir"><Trash2 size={16} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -3099,12 +3155,6 @@ function NoticeList({
 }
 
 export default App
-
-
-
-
-
-
 
 
 

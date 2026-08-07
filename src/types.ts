@@ -59,7 +59,7 @@ export type InventoryCheckItem = {
 
 export type StockOrderStatus = 'pendente' | 'separado' | 'entregue'
 
-export type StockMovementType = 'entrada' | 'saida'
+export type StockMovementType = 'desperdicio' | 'saida'
 
 export type StockMovement = {
   id: number

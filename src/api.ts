@@ -214,6 +214,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  updateStockMovement: (id: number, payload: { product_id: number; movement_type: StockMovementType; quantity: number; date: string; notes?: string }) =>
+    request<StockMovement>(`/api/stock-movements/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  deleteStockMovement: (id: number) =>
+    request<{ ok: boolean }>(`/api/stock-movements/${id}`, {
+      method: 'DELETE',
+    }),
   breakfastMenus: () => request<BreakfastMenu[]>('/api/breakfast-menus'),
   createBreakfastMenuItem: (payload: { menu_id: string; section: string; item: string; values: BreakfastMenuItem['values'] }) =>
     request<BreakfastMenuItem>('/api/breakfast-menu-items', {

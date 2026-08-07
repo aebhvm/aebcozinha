@@ -788,21 +788,25 @@ button:disabled {
 }
 
 .stock-movement-table {
-  min-width: 760px;
+  min-width: 860px;
 }
 
 .movement-filter-control {
   margin-top: 10px;
 }
 
-.movement-entrada {
+.movement-desperdicio {
+  color: #9f2d20;
+  background: #fff0ee;
+}
+
+.movement-saida {
   color: var(--green);
   background: #edf8f1;
 }
 
-.movement-saida {
-  color: #8a4f00;
-  background: #fff7df;
+.stock-movement-actions {
+  justify-content: flex-end;
 }
 
 .negative-stock {
