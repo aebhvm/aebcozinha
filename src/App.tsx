@@ -38,7 +38,7 @@ import { api, clearSession, getSession, saveSession } from './api'
 import { currentMenuDay, menuDays, type MenuDay } from './menuData'
 import './App.css'
 import { formatDate, formatDateTime, todayIso } from './date'
-import type { BreakfastMenu, BreakfastMenuItem, DayPayload, InventoryCheckItem, InventoryCheckSector, InventoryCheckStatus, Notice, Priority, Product, ProductCategory, Schedule, Session, Station, StockCategory, StockOrder, StockOrderStatus, Task, TechnicalSheet, User } from './types'
+import type { BreakfastMenu, BreakfastMenuItem, DayPayload, InventoryCheckItem, InventoryCheckSector, InventoryCheckStatus, Notice, Priority, Product, ProductCategory, Schedule, Session, Station, StockCategory, StockMovement, StockMovementType, StockOrder, StockOrderStatus, Task, TechnicalSheet, User } from './types'
 
 type LoadState<T> = {
   data: T | null
@@ -213,11 +213,27 @@ function App() {
         }
       />
       <Route
+        path="/gestor/contagem-insumos"
+        element={
+          <ProtectedRoles session={session} roles={['gestor', 'estoquista', 'colaborador']}>
+            <StockCountPage session={session!} onLogout={logout} />
+          </ProtectedRoles>
+        }
+      />
+      <Route
         path="/estoque"
         element={
           <Protected session={session} role="estoquista">
             <StockPage session={session!} onLogout={logout} canManageCatalog />
           </Protected>
+        }
+      />
+      <Route
+        path="/estoque/contagem-insumos"
+        element={
+          <ProtectedRoles session={session} roles={['gestor', 'estoquista', 'colaborador']}>
+            <StockCountPage session={session!} onLogout={logout} />
+          </ProtectedRoles>
         }
       />
       <Route
@@ -253,6 +269,14 @@ function App() {
         }
       />
       <Route
+        path="/colaborador/contagem-insumos"
+        element={
+          <ProtectedRoles session={session} roles={['gestor', 'estoquista', 'colaborador']}>
+            <StockCountPage session={session!} onLogout={logout} />
+          </ProtectedRoles>
+        }
+      />
+      <Route
         path="*"
         element={
           <Navigate
@@ -284,6 +308,20 @@ function Protected({
       />
     )
   }
+  return children
+}
+
+function ProtectedRoles({
+  children,
+  session,
+  roles,
+}: {
+  children: ReactNode
+  session: Session | null
+  roles: Array<'gestor' | 'colaborador' | 'estoquista'>
+}) {
+  if (!session) return <Navigate to="/login" replace />
+  if (!roles.includes(session.user.role)) return <Navigate to={homePath(session)} replace />
   return children
 }
 
@@ -472,6 +510,9 @@ function Shell({
               <Boxes size={19} /> Pedidos
               {stockPendingCount > 0 && <span className="nav-badge">{stockPendingCount}</span>}
             </Link>
+            <Link to="/gestor/contagem-insumos" onClick={closeSidebar}>
+              <ClipboardList size={19} /> Contagem de insumos
+            </Link>
             <Link to="/gestor/conferencia" onClick={closeSidebar}>
               <CheckCircle2 size={19} /> Conferência
             </Link>
@@ -481,6 +522,9 @@ function Shell({
             <Link to="/estoque" onClick={closeSidebar}>
               <Boxes size={19} /> Pedidos
               {stockPendingCount > 0 && <span className="nav-badge">{stockPendingCount}</span>}
+            </Link>
+            <Link to="/estoque/contagem-insumos" onClick={closeSidebar}>
+              <ClipboardList size={19} /> Contagem de insumos
             </Link>
           </nav>
         ) : (
@@ -496,6 +540,9 @@ function Shell({
             </Link>
             <Link to="/colaborador/pedidos" onClick={closeSidebar}>
               <ShoppingCart size={19} /> Meus pedidos
+            </Link>
+            <Link to="/colaborador/contagem-insumos" onClick={closeSidebar}>
+              <ClipboardList size={19} /> Entradas e saídas
             </Link>
           </nav>
         )}
@@ -1571,6 +1618,254 @@ function StockPage({ session, onLogout, canManageCatalog = false }: { session: S
             </div>
           </div>
         </div>
+        )}
+      </section>
+    </Shell>
+  )
+}
+
+function formatStockQuantity(value: number) {
+  return new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 3 }).format(value)
+}
+
+const stockMovementLabels: Record<StockMovementType, string> = {
+  entrada: 'Entrada',
+  saida: 'Saída',
+}
+
+function StockCountPage({ session, onLogout }: { session: Session; onLogout: () => void }) {
+  const [products, setProducts] = useState<Product[]>([])
+  const [categories, setCategories] = useState<StockCategory[]>([])
+  const [movements, setMovements] = useState<StockMovement[]>([])
+  const [movementDate, setMovementDate] = useState(todayIso())
+  const [movementTypeFilter, setMovementTypeFilter] = useState<'todos' | StockMovementType>('todos')
+  const [movementForm, setMovementForm] = useState({ product_id: '', movement_type: 'entrada' as StockMovementType, quantity: '', notes: '' })
+  const [productSearch, setProductSearch] = useState('')
+  const [productForm, setProductForm] = useState({ name: '', category: '', unit: '', observations: '' })
+  const [loading, setLoading] = useState(true)
+  const [savingMovement, setSavingMovement] = useState(false)
+  const [savingProduct, setSavingProduct] = useState(false)
+  const [error, setError] = useState('')
+  const [productError, setProductError] = useState('')
+  const [success, setSuccess] = useState('')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [productsPayload, categoriesPayload, movementsPayload] = await Promise.all([
+        api.products(),
+        api.stockCategories(),
+        api.stockMovements(movementDate),
+      ])
+      setProducts(productsPayload)
+      setCategories(categoriesPayload)
+      setMovements(movementsPayload)
+      setProductForm((current) => ({ ...current, category: current.category || categoriesPayload[0]?.name || '' }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao carregar a contagem de insumos.')
+    } finally {
+      setLoading(false)
+    }
+  }, [movementDate])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const selectedProduct = products.find((product) => product.id === Number(movementForm.product_id))
+  const visibleMovements = useMemo(
+    () => movementTypeFilter === 'todos' ? movements : movements.filter((movement) => movement.movement_type === movementTypeFilter),
+    [movementTypeFilter, movements],
+  )
+  const matchingProducts = useMemo(() => {
+    const normalizedSearch = productSearch.trim().toLocaleLowerCase('pt-BR').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    if (!normalizedSearch) return []
+    return products
+      .filter((product) => product.name.toLocaleLowerCase('pt-BR').normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(normalizedSearch))
+      .slice(0, 8)
+  }, [productSearch, products])
+
+  function selectProduct(product: Product) {
+    setMovementForm((current) => ({ ...current, product_id: String(product.id) }))
+    setProductSearch(product.name)
+  }
+
+  async function submitMovement(event: FormEvent) {
+    event.preventDefault()
+    setError('')
+    setSuccess('')
+    const productId = Number(movementForm.product_id)
+    const quantity = Number(movementForm.quantity.replace(',', '.'))
+    if (!productId || !Number.isFinite(quantity) || quantity <= 0) {
+      setError('Selecione o produto e informe uma quantidade maior que zero.')
+      return
+    }
+    setSavingMovement(true)
+    try {
+      await api.createStockMovement({
+        product_id: productId,
+        movement_type: movementForm.movement_type,
+        quantity,
+        date: movementDate,
+        notes: movementForm.notes.trim() || undefined,
+      })
+      setMovementForm((current) => ({ ...current, quantity: '', notes: '' }))
+      setSuccess(`${stockMovementLabels[movementForm.movement_type]} registrada com sucesso.`)
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao registrar movimentação.')
+    } finally {
+      setSavingMovement(false)
+    }
+  }
+
+  async function submitProduct(event: FormEvent) {
+    event.preventDefault()
+    setProductError('')
+    setSuccess('')
+    setSavingProduct(true)
+    try {
+      const product = await api.createProduct({
+        name: productForm.name.trim(),
+        category: productForm.category.trim(),
+        unit: productForm.unit.trim(),
+        observations: productForm.observations.trim() || undefined,
+      })
+      setProductForm({ name: '', category: categories[0]?.name || '', unit: '', observations: '' })
+      setMovementForm((current) => ({ ...current, product_id: String(product.id) }))
+      setProductSearch(product.name)
+      setSuccess(`Insumo ${product.name} cadastrado e selecionado para a movimentação.`)
+      await load()
+    } catch (err) {
+      setProductError(err instanceof Error ? err.message : 'Erro ao cadastrar insumo.')
+    } finally {
+      setSavingProduct(false)
+    }
+  }
+
+  return (
+    <Shell session={session} onLogout={onLogout} title="Contagem de insumos" subtitle="Registre entradas e saídas usando os produtos dos pedidos.">
+      <section className="grid two stock-count-layout">
+        <div className="panel">
+          <div className="panel-title-row">
+            <div>
+              <h2>Registrar movimentação</h2>
+              <p className="hint">A unidade vem do cadastro do produto.</p>
+            </div>
+            <label className="compact-label">
+              Data
+              <input type="date" value={movementDate} onChange={(event) => setMovementDate(event.target.value)} required />
+            </label>
+          </div>
+          <form className="stack" onSubmit={submitMovement}>
+            <label>
+              Tipo
+              <select value={movementForm.movement_type} onChange={(event) => setMovementForm({ ...movementForm, movement_type: event.target.value as StockMovementType })}>
+                <option value="entrada">Entrada</option>
+                <option value="saida">Saída</option>
+              </select>
+            </label>
+            <label>
+              Produto
+              <div className="product-search">
+                <input
+                  value={productSearch}
+                  onChange={(event) => {
+                    setProductSearch(event.target.value)
+                    setMovementForm((current) => ({ ...current, product_id: '' }))
+                  }}
+                  placeholder="Digite o nome do insumo"
+                  autoComplete="off"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-expanded={productSearch.trim().length > 0 && !movementForm.product_id}
+                />
+                {productSearch.trim().length > 0 && !movementForm.product_id && (
+                  <div className="product-suggestions" role="listbox" aria-label="Produtos encontrados">
+                    {matchingProducts.map((product) => (
+                      <button type="button" className="product-suggestion" key={product.id} onClick={() => selectProduct(product)}>
+                        <span>{product.name}</span>
+                        <small>{product.unit}</small>
+                      </button>
+                    ))}
+                    {matchingProducts.length === 0 && <p className="product-suggestions-empty">Nenhum produto encontrado.</p>}
+                  </div>
+                )}
+              </div>
+            </label>
+            <div className="stock-count-form-row">
+              <label>
+                Quantidade
+                <input type="text" inputMode="decimal" value={movementForm.quantity} onChange={(event) => setMovementForm({ ...movementForm, quantity: event.target.value })} placeholder="Ex.: 5 ou 2,5" required />
+              </label>
+              <label>
+                Unidade de medida
+                <input value={selectedProduct?.unit ?? ''} readOnly placeholder="Definida no produto" />
+              </label>
+            </div>
+            <label>
+              Observação
+              <textarea value={movementForm.notes} onChange={(event) => setMovementForm({ ...movementForm, notes: event.target.value })} rows={2} maxLength={500} placeholder="Ex.: compra, uso na produção ou ajuste." />
+            </label>
+            {error && <p className="error">{error}</p>}
+            {success && <p className="success-message">{success}</p>}
+            <button className="primary" disabled={savingMovement || !movementForm.product_id || !movementForm.quantity.trim()}>
+              {savingMovement ? 'Salvando...' : `Registrar ${stockMovementLabels[movementForm.movement_type].toLowerCase()}`}
+            </button>
+          </form>
+        </div>
+
+        <div className="panel">
+          <h2>Novo insumo</h2>
+          <p className="hint">Se o produto não aparecer nos pedidos, cadastre-o aqui para usar na contagem e nos próximos pedidos.</p>
+          <form className="stack" onSubmit={submitProduct}>
+            <label>
+              Produto
+              <input value={productForm.name} onChange={(event) => setProductForm({ ...productForm, name: event.target.value })} placeholder="Ex.: Óleo de soja" required />
+            </label>
+            <label>
+              Categoria
+              <select value={productForm.category} onChange={(event) => setProductForm({ ...productForm, category: event.target.value })} required>
+                <option value="">Selecione...</option>
+                {categories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}
+              </select>
+            </label>
+            <label>
+              Unidade de medida
+              <input value={productForm.unit} onChange={(event) => setProductForm({ ...productForm, unit: event.target.value })} placeholder="kg, litro, unidade, caixa" required />
+            </label>
+            <label>
+              Observação
+              <textarea value={productForm.observations} onChange={(event) => setProductForm({ ...productForm, observations: event.target.value })} rows={2} />
+            </label>
+            {productError && <p className="error">{productError}</p>}
+            <button className="secondary" disabled={savingProduct || !productForm.name.trim() || !productForm.category.trim() || !productForm.unit.trim()}>
+              {savingProduct ? 'Salvando...' : 'Cadastrar insumo'}
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Movimentações de {formatDate(movementDate)}</h2>
+            <div className="segmented-control movement-filter-control" aria-label="Filtrar movimentações">
+              <button type="button" className={movementTypeFilter === 'todos' ? 'active' : ''} onClick={() => setMovementTypeFilter('todos')}>Todas</button>
+              <button type="button" className={movementTypeFilter === 'entrada' ? 'active' : ''} onClick={() => setMovementTypeFilter('entrada')}>Entradas</button>
+              <button type="button" className={movementTypeFilter === 'saida' ? 'active' : ''} onClick={() => setMovementTypeFilter('saida')}>Saídas</button>
+            </div>
+          </div>
+        </div>
+        {loading ? <p className="empty">Carregando registros...</p> : visibleMovements.length === 0 ? <p className="empty">Nenhum registro encontrado para este filtro.</p> : (
+          <div className="stock-count-table-wrap">
+            <table className="stock-count-table stock-movement-table">
+              <thead><tr><th>Tipo</th><th>Produto</th><th>Quantidade</th><th>Unidade de medida</th><th>Responsável</th></tr></thead>
+              <tbody>
+                {visibleMovements.map((movement) => <tr key={movement.id}><td><span className={`pill movement-${movement.movement_type}`}>{stockMovementLabels[movement.movement_type]}</span></td><td>{movement.product_name}</td><td>{formatStockQuantity(movement.quantity)}</td><td>{movement.unit}</td><td>{movement.created_by_name}</td></tr>)}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </Shell>
@@ -2804,18 +3099,6 @@ function NoticeList({
 }
 
 export default App
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

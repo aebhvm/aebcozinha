@@ -59,6 +59,21 @@ export type InventoryCheckItem = {
 
 export type StockOrderStatus = 'pendente' | 'separado' | 'entregue'
 
+export type StockMovementType = 'entrada' | 'saida'
+
+export type StockMovement = {
+  id: number
+  product_id: number
+  product_name: string
+  movement_type: StockMovementType
+  quantity: number
+  unit: string
+  movement_date: string
+  notes: string | null
+  created_at: string
+  created_by_name: string
+}
+
 export type StockOrderItem = {
   id: number
   order_id: number

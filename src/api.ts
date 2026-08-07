@@ -1,4 +1,4 @@
-import type { BreakfastMenu, BreakfastMenuItem, DayPayload, InventoryCheckItem, InventoryCheckSector, InventoryCheckStatus, Notice, Priority, Product, ProductCategory, Schedule, Session, Station, StockCategory, StockOrder, StockOrderStatus, Task, TechnicalSheet, User } from './types'
+import type { BreakfastMenu, BreakfastMenuItem, DayPayload, InventoryCheckItem, InventoryCheckSector, InventoryCheckStatus, Notice, Priority, Product, ProductCategory, Schedule, Session, Station, StockCategory, StockMovement, StockMovementType, StockOrder, StockOrderStatus, Task, TechnicalSheet, User } from './types'
 
 const SESSION_KEY = 'cozinha.session'
 
@@ -208,6 +208,12 @@ export const api = {
       body: JSON.stringify({ status }),
     }),
   stockPendingCount: () => request<{ count: number }>('/api/stock-orders/pending-count'),
+  stockMovements: (date?: string) => request<StockMovement[]>(`/api/stock-movements${date ? `?date=${date}` : ''}`),
+  createStockMovement: (payload: { product_id: number; movement_type: StockMovementType; quantity: number; date: string; notes?: string }) =>
+    request<StockMovement>('/api/stock-movements', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   breakfastMenus: () => request<BreakfastMenu[]>('/api/breakfast-menus'),
   createBreakfastMenuItem: (payload: { menu_id: string; section: string; item: string; values: BreakfastMenuItem['values'] }) =>
     request<BreakfastMenuItem>('/api/breakfast-menu-items', {
