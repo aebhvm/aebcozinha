@@ -736,15 +736,33 @@ button:disabled {
 
 .stock-count-layout {
   align-items: start;
+  min-width: 0;
 }
 
 .stock-count-layout .panel {
   align-self: start;
+  min-width: 0;
+}
+
+.stock-count-entry-form,
+.stock-count-entry-form label,
+.stock-count-entry-form .product-search {
+  min-width: 0;
+}
+
+.stock-count-actions {
+  width: 100%;
+  justify-content: stretch;
+}
+
+.stock-count-actions button {
+  flex: 1 1 180px;
+  min-width: 0;
 }
 
 .stock-count-form-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(150px, 0.8fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr);
   gap: 12px;
 }
 
@@ -822,6 +840,25 @@ button:disabled {
 @media (max-width: 820px) {
   .stock-count-form-row {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 460px) {
+  .stock-count-layout .panel {
+    padding: 14px;
+  }
+
+  .stock-count-entry-form {
+    gap: 12px;
+  }
+
+  .stock-count-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .stock-count-actions button {
+    width: 100%;
   }
 }
 

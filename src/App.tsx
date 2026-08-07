@@ -1796,7 +1796,7 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
               <input type="date" value={movementDate} onChange={(event) => setMovementDate(event.target.value)} required />
             </label>
           </div>
-          <form className="stack" onSubmit={submitMovement}>
+          <form className="stack stock-count-entry-form" onSubmit={submitMovement}>
             <label>
               Tipo
               <select value={movementForm.movement_type} onChange={(event) => setMovementForm({ ...movementForm, movement_type: event.target.value as StockMovementType })}>
@@ -1848,7 +1848,7 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
             </label>
             {error && <p className="error">{error}</p>}
             {success && <p className="success-message">{success}</p>}
-            <div className="row-actions">
+            <div className="row-actions stock-count-actions">
               {editingMovementId && <button type="button" className="secondary" onClick={resetMovementForm}>Cancelar edição</button>}
               <button className="primary" disabled={savingMovement || !movementForm.product_id || !movementForm.quantity.trim()}>
                 {savingMovement ? 'Salvando...' : editingMovementId ? 'Salvar alteração' : `Registrar ${stockMovementLabels[movementForm.movement_type].toLowerCase()}`}
@@ -3155,7 +3155,6 @@ function NoticeList({
 }
 
 export default App
-
 
 
 
