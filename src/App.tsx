@@ -1232,15 +1232,23 @@ function ManagerReportCapture({
   const nativeAudioInputRef = useRef<HTMLInputElement | null>(null)
   const nativeCameraInputRef = useRef<HTMLInputElement | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const discardRecordingRef = useRef(false)
   const recordingKindRef = useRef<'audio' | 'video'>('audio')
 
   const stopStream = useCallback(() => {
-    setStream((current) => {
-      current?.getTracks().forEach((track) => track.stop())
-      return null
-    })
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+    setStream(null)
+  }, [])
+
+  const replaceStream = useCallback((nextStream: MediaStream) => {
+    if (streamRef.current !== nextStream) {
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+    }
+    streamRef.current = nextStream
+    setStream(nextStream)
   }, [])
 
   const closeCapture = useCallback(() => {
@@ -1261,8 +1269,9 @@ function ManagerReportCapture({
       discardRecordingRef.current = true
       recorderRef.current.stop()
     }
-    stream?.getTracks().forEach((track) => track.stop())
-  }, [stream])
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+  }, [])
 
   useEffect(() => {
     if (videoRef.current && stream && captureMode === 'camera') {
@@ -1298,7 +1307,6 @@ function ManagerReportCapture({
   }
 
   async function createStream(mode: ManagerReportCameraMode) {
-    stopStream()
     const nextStream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: 'environment' },
@@ -1307,7 +1315,7 @@ function ManagerReportCapture({
       },
       audio: mode === 'video',
     })
-    setStream(nextStream)
+    replaceStream(nextStream)
     setCameraMode(mode)
   }
 
@@ -1381,6 +1389,10 @@ function ManagerReportCapture({
       if (!shouldDiscard && blob.size > 0) {
         const file = new File([blob], `${kind === 'audio' ? 'audio' : 'video'}-${Date.now()}.${recordingExtension(recordedMime, kind)}`, { type: recordedMime })
         void onCapture(file).then(closeCapture)
+      } else if (!shouldDiscard) {
+        stopStream()
+        setCaptureMode(null)
+        setCaptureError('O navegador encerrou a gravação sem gerar áudio. Tente novamente ou use o gravador do aparelho.')
       }
     }
     recorder.onerror = () => {
@@ -1410,7 +1422,7 @@ function ManagerReportCapture({
     try {
       const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
       setRequestingPermission(false)
-      setStream(audioStream)
+      replaceStream(audioStream)
       startRecorder(audioStream, 'audio')
     } catch (err) {
       closeCapture()
@@ -3816,4 +3828,3 @@ function NoticeList({
 }
 
 export default App
-
