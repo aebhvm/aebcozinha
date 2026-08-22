@@ -809,6 +809,77 @@ button:disabled {
   opacity: 0;
 }
 
+.manager-report-capture {
+  display: grid;
+  gap: 12px;
+}
+
+.manager-report-capture-actions,
+.manager-report-camera-actions,
+.manager-report-camera-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.manager-report-capture-actions button {
+  min-height: 44px;
+}
+
+.manager-report-recorder {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #efb4ad;
+  border-radius: 8px;
+  background: #fff6f4;
+}
+
+.recording-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  background: #c63d2f;
+  box-shadow: 0 0 0 4px rgba(198, 61, 47, 0.14);
+  animation: manager-report-recording-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes manager-report-recording-pulse {
+  50% {
+    opacity: 0.45;
+    transform: scale(0.86);
+  }
+}
+
+.manager-report-camera {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.manager-report-camera video {
+  display: block;
+  width: 100%;
+  max-height: 480px;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #0e1713;
+}
+
+.manager-report-recording-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: #8d2a20;
+  font-weight: 800;
+}
+
 .manager-report-draft-files {
   display: grid;
   gap: 8px;
@@ -1008,6 +1079,16 @@ button:disabled {
     width: 100%;
     justify-content: center;
   }
+
+  .manager-report-recorder {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .manager-report-recorder button {
+    grid-column: span 3;
+    width: 100%;
+    justify-content: center;
+  }
 }
 
 @media (max-width: 520px) {
@@ -1030,6 +1111,18 @@ button:disabled {
 
   .manager-report-draft-files small {
     display: none;
+  }
+
+  .manager-report-capture-actions,
+  .manager-report-camera-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .manager-report-capture-actions button,
+  .manager-report-camera-actions button {
+    width: 100%;
+    justify-content: center;
   }
 }
 

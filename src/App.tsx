@@ -1199,6 +1199,268 @@ function ManagerReportMedia({ attachment }: { attachment: ManagerReportAttachmen
   )
 }
 
+type ManagerReportCaptureMode = 'audio' | 'camera' | null
+type ManagerReportCameraMode = 'foto' | 'video'
+
+function supportedRecorderMime(kind: 'audio' | 'video') {
+  const candidates = kind === 'audio'
+    ? ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm']
+    : ['video/webm;codecs=vp8,opus', 'video/mp4', 'video/webm']
+  return candidates.find((mime) => MediaRecorder.isTypeSupported(mime)) ?? ''
+}
+
+function recordingExtension(mimeType: string, kind: 'audio' | 'video') {
+  if (mimeType.includes('mp4')) return 'mp4'
+  return kind === 'audio' ? 'webm' : 'webm'
+}
+
+function ManagerReportCapture({
+  disabled,
+  onCapture,
+}: {
+  disabled: boolean
+  onCapture: (file: File) => Promise<void>
+}) {
+  const [captureMode, setCaptureMode] = useState<ManagerReportCaptureMode>(null)
+  const [cameraMode, setCameraMode] = useState<ManagerReportCameraMode>('foto')
+  const [stream, setStream] = useState<MediaStream | null>(null)
+  const [recording, setRecording] = useState(false)
+  const [recordingSeconds, setRecordingSeconds] = useState(0)
+  const [captureError, setCaptureError] = useState('')
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const discardRecordingRef = useRef(false)
+  const recordingKindRef = useRef<'audio' | 'video'>('audio')
+
+  const stopStream = useCallback(() => {
+    setStream((current) => {
+      current?.getTracks().forEach((track) => track.stop())
+      return null
+    })
+  }, [])
+
+  const closeCapture = useCallback(() => {
+    if (recorderRef.current?.state === 'recording') {
+      discardRecordingRef.current = true
+      recorderRef.current.stop()
+    }
+    recorderRef.current = null
+    setRecording(false)
+    setRecordingSeconds(0)
+    stopStream()
+    setCaptureMode(null)
+  }, [stopStream])
+
+  useEffect(() => () => {
+    if (recorderRef.current?.state === 'recording') {
+      discardRecordingRef.current = true
+      recorderRef.current.stop()
+    }
+    stream?.getTracks().forEach((track) => track.stop())
+  }, [stream])
+
+  useEffect(() => {
+    if (videoRef.current && stream && captureMode === 'camera') {
+      videoRef.current.srcObject = stream
+      void videoRef.current.play().catch(() => undefined)
+    }
+  }, [captureMode, stream])
+
+  useEffect(() => {
+    if (!recording) return
+    const timer = window.setInterval(() => {
+      setRecordingSeconds((current) => current + 1)
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [recording])
+
+  useEffect(() => {
+    if (!recording) return
+    const limit = recordingKindRef.current === 'audio' ? 60 : 15
+    if (recordingSeconds >= limit && recorderRef.current?.state === 'recording') {
+      recorderRef.current.stop()
+    }
+  }, [recording, recordingSeconds])
+
+  function permissionMessage(err: unknown) {
+    if (err instanceof DOMException && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) {
+      return 'Permissão negada. Libere câmera e microfone nas configurações do navegador.'
+    }
+    if (err instanceof DOMException && err.name === 'NotFoundError') {
+      return 'Nenhuma câmera ou microfone foi encontrado neste aparelho.'
+    }
+    return 'Não foi possível acessar a câmera ou o microfone.'
+  }
+
+  async function createStream(mode: ManagerReportCameraMode) {
+    stopStream()
+    const nextStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 640 },
+        height: { ideal: 480 },
+      },
+      audio: mode === 'video',
+    })
+    setStream(nextStream)
+    setCameraMode(mode)
+  }
+
+  async function openCamera() {
+    setCaptureError('')
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('unsupported')
+      setCaptureMode('camera')
+      await createStream('foto')
+    } catch (err) {
+      closeCapture()
+      setCaptureError(permissionMessage(err))
+    }
+  }
+
+  async function changeCameraMode(mode: ManagerReportCameraMode) {
+    if (recording || mode === cameraMode) return
+    setCaptureError('')
+    try {
+      await createStream(mode)
+    } catch (err) {
+      setCaptureError(permissionMessage(err))
+    }
+  }
+
+  async function takePhoto() {
+    const video = videoRef.current
+    if (!video || !video.videoWidth || !video.videoHeight) {
+      setCaptureError('Aguarde a imagem da câmera aparecer para tirar a foto.')
+      return
+    }
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    canvas.getContext('2d')?.drawImage(video, 0, 0)
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.72))
+    if (!blob) {
+      setCaptureError('Não foi possível capturar a foto.')
+      return
+    }
+    await onCapture(new File([blob], `foto-${Date.now()}.jpg`, { type: 'image/jpeg' }))
+    closeCapture()
+  }
+
+  function startRecorder(nextStream: MediaStream, kind: 'audio' | 'video') {
+    const mimeType = supportedRecorderMime(kind)
+    const recorder = new MediaRecorder(nextStream, {
+      ...(mimeType ? { mimeType } : {}),
+      ...(kind === 'audio' ? { audioBitsPerSecond: 64_000 } : { audioBitsPerSecond: 64_000, videoBitsPerSecond: 500_000 }),
+    })
+    chunksRef.current = []
+    discardRecordingRef.current = false
+    recordingKindRef.current = kind
+    recorderRef.current = recorder
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunksRef.current.push(event.data)
+    }
+    recorder.onstop = () => {
+      const shouldDiscard = discardRecordingRef.current
+      const recordedMime = recorder.mimeType || (kind === 'audio' ? 'audio/webm' : 'video/webm')
+      const blob = new Blob(chunksRef.current, { type: recordedMime })
+      setRecording(false)
+      setRecordingSeconds(0)
+      recorderRef.current = null
+      chunksRef.current = []
+      if (!shouldDiscard && blob.size > 0) {
+        const file = new File([blob], `${kind === 'audio' ? 'audio' : 'video'}-${Date.now()}.${recordingExtension(recordedMime, kind)}`, { type: recordedMime })
+        void onCapture(file).then(closeCapture)
+      }
+    }
+    recorder.start(500)
+    setRecordingSeconds(0)
+    setRecording(true)
+  }
+
+  async function startAudioRecording() {
+    setCaptureError('')
+    try {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') throw new Error('unsupported')
+      const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      setStream(audioStream)
+      setCaptureMode('audio')
+      startRecorder(audioStream, 'audio')
+    } catch (err) {
+      closeCapture()
+      setCaptureError(permissionMessage(err))
+    }
+  }
+
+  function startVideoRecording() {
+    if (!stream) return
+    setCaptureError('')
+    try {
+      startRecorder(stream, 'video')
+    } catch {
+      setCaptureError('Este navegador não conseguiu iniciar a gravação de vídeo.')
+    }
+  }
+
+  function finishRecording(save: boolean) {
+    if (!recorderRef.current || recorderRef.current.state !== 'recording') return
+    discardRecordingRef.current = !save
+    recorderRef.current.stop()
+    if (!save) closeCapture()
+  }
+
+  return (
+    <div className="manager-report-capture">
+      <div className="manager-report-capture-actions">
+        <button type="button" className="secondary" onClick={() => void startAudioRecording()} disabled={disabled || captureMode !== null}>
+          <Mic size={18} /> Gravar áudio
+        </button>
+        <button type="button" className="secondary" onClick={() => void openCamera()} disabled={disabled || captureMode !== null}>
+          <Camera size={18} /> Abrir câmera
+        </button>
+      </div>
+
+      {captureMode === 'audio' && (
+        <div className="manager-report-recorder active" role="status" aria-live="polite">
+          <span className="recording-dot" />
+          <strong>Gravando áudio</strong>
+          <span>{String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:{String(recordingSeconds % 60).padStart(2, '0')} / 01:00</span>
+          <button type="button" className="primary compact" onClick={() => finishRecording(true)}>Concluir áudio</button>
+          <button type="button" className="secondary compact" onClick={() => finishRecording(false)}>Cancelar</button>
+        </div>
+      )}
+
+      {captureMode === 'camera' && (
+        <div className="manager-report-camera">
+          <div className="manager-report-camera-tabs" role="group" aria-label="Modo da câmera">
+            <button type="button" className={cameraMode === 'foto' ? 'primary compact' : 'secondary compact'} onClick={() => void changeCameraMode('foto')} disabled={recording}>Foto</button>
+            <button type="button" className={cameraMode === 'video' ? 'primary compact' : 'secondary compact'} onClick={() => void changeCameraMode('video')} disabled={recording}>Vídeo</button>
+          </div>
+          <video ref={videoRef} muted playsInline autoPlay aria-label="Pré-visualização da câmera" />
+          {recording && (
+            <div className="manager-report-recording-status" role="status" aria-live="polite">
+              <span className="recording-dot" /> Gravando {recordingSeconds}s / 15s
+            </div>
+          )}
+          <div className="manager-report-camera-actions">
+            {cameraMode === 'foto' ? (
+              <button type="button" className="primary" onClick={() => void takePhoto()}><Camera size={18} /> Tirar foto</button>
+            ) : recording ? (
+              <button type="button" className="primary" onClick={() => finishRecording(true)}><Video size={18} /> Concluir vídeo</button>
+            ) : (
+              <button type="button" className="primary" onClick={startVideoRecording}><Video size={18} /> Gravar vídeo</button>
+            )}
+            <button type="button" className="secondary" onClick={() => recording ? finishRecording(false) : closeCapture()}>Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      {captureError && <p className="error">{captureError}</p>}
+    </div>
+  )
+}
+
 function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout: () => void }) {
   const [reports, setReports] = useState<ManagerReport[]>([])
   const [title, setTitle] = useState('')
@@ -1237,9 +1499,7 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
     report.created_by !== session.user.id && !report.verified_at
   )).length, [reports, session.user.id])
 
-  async function addFiles(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? [])
-    event.target.value = ''
+  async function appendFiles(files: File[]) {
     if (!files.length) return
     setError('')
     let totalBytes = attachments.reduce((total, attachment) => total + attachment.size_bytes, 0)
@@ -1275,6 +1535,12 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
     }
 
     if (next.length > 0) setAttachments((current) => [...current, ...next])
+  }
+
+  async function addFiles(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    await appendFiles(files)
   }
 
   async function submit(event: FormEvent) {
@@ -1365,6 +1631,10 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
             <small>Até {managerReportMaxFiles} arquivos e 2,5 MB no total</small>
             <input type="file" accept="image/*,audio/*,video/*" multiple onChange={(event) => void addFiles(event)} />
           </label>
+          <ManagerReportCapture
+            disabled={attachments.length >= managerReportMaxFiles}
+            onCapture={(file) => appendFiles([file])}
+          />
           {attachments.length > 0 && (
             <div className="manager-report-draft-files">
               {attachments.map((attachment) => (
@@ -3503,7 +3773,6 @@ function NoticeList({
 }
 
 export default App
-
 
 
 
