@@ -1393,6 +1393,10 @@ function ManagerReportCapture({
     }
     recorder.start()
     setRecordingSeconds(0)
+    if (recorder.state === 'recording') {
+      setRequestingPermission(false)
+      setRecording(true)
+    }
   }
 
   async function startAudioRecording() {
@@ -1405,6 +1409,7 @@ function ManagerReportCapture({
     setRequestingPermission(true)
     try {
       const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      setRequestingPermission(false)
       setStream(audioStream)
       startRecorder(audioStream, 'audio')
     } catch (err) {
@@ -3811,5 +3816,4 @@ function NoticeList({
 }
 
 export default App
-
 
