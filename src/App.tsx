@@ -1225,9 +1225,12 @@ function ManagerReportCapture({
   const [cameraMode, setCameraMode] = useState<ManagerReportCameraMode>('foto')
   const [stream, setStream] = useState<MediaStream | null>(null)
   const [recording, setRecording] = useState(false)
+  const [requestingPermission, setRequestingPermission] = useState(false)
   const [recordingSeconds, setRecordingSeconds] = useState(0)
   const [captureError, setCaptureError] = useState('')
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const nativeAudioInputRef = useRef<HTMLInputElement | null>(null)
+  const nativeCameraInputRef = useRef<HTMLInputElement | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const discardRecordingRef = useRef(false)
@@ -1247,6 +1250,7 @@ function ManagerReportCapture({
     }
     recorderRef.current = null
     setRecording(false)
+    setRequestingPermission(false)
     setRecordingSeconds(0)
     stopStream()
     setCaptureMode(null)
@@ -1350,10 +1354,14 @@ function ManagerReportCapture({
 
   function startRecorder(nextStream: MediaStream, kind: 'audio' | 'video') {
     const mimeType = supportedRecorderMime(kind)
-    const recorder = new MediaRecorder(nextStream, {
-      ...(mimeType ? { mimeType } : {}),
-      ...(kind === 'audio' ? { audioBitsPerSecond: 64_000 } : { audioBitsPerSecond: 64_000, videoBitsPerSecond: 500_000 }),
-    })
+    const recorderOptions = kind === 'audio'
+      ? (mimeType ? { mimeType } : undefined)
+      : {
+          ...(mimeType ? { mimeType } : {}),
+          audioBitsPerSecond: 64_000,
+          videoBitsPerSecond: 500_000,
+        }
+    const recorder = new MediaRecorder(nextStream, recorderOptions)
     chunksRef.current = []
     discardRecordingRef.current = false
     recordingKindRef.current = kind
@@ -1366,6 +1374,7 @@ function ManagerReportCapture({
       const recordedMime = recorder.mimeType || (kind === 'audio' ? 'audio/webm' : 'video/webm')
       const blob = new Blob(chunksRef.current, { type: recordedMime })
       setRecording(false)
+      setRequestingPermission(false)
       setRecordingSeconds(0)
       recorderRef.current = null
       chunksRef.current = []
@@ -1374,18 +1383,29 @@ function ManagerReportCapture({
         void onCapture(file).then(closeCapture)
       }
     }
-    recorder.start(500)
+    recorder.onerror = () => {
+      setCaptureError('A gravação foi interrompida pelo navegador. Tente novamente ou use o gravador do aparelho.')
+      closeCapture()
+    }
+    recorder.onstart = () => {
+      setRequestingPermission(false)
+      setRecording(true)
+    }
+    recorder.start()
     setRecordingSeconds(0)
-    setRecording(true)
   }
 
   async function startAudioRecording() {
     setCaptureError('')
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      nativeAudioInputRef.current?.click()
+      return
+    }
+    setCaptureMode('audio')
+    setRequestingPermission(true)
     try {
-      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') throw new Error('unsupported')
       const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
       setStream(audioStream)
-      setCaptureMode('audio')
       startRecorder(audioStream, 'audio')
     } catch (err) {
       closeCapture()
@@ -1410,13 +1430,29 @@ function ManagerReportCapture({
     if (!save) closeCapture()
   }
 
+  async function addNativeCapture(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    setCaptureError('')
+    await onCapture(file)
+  }
+
+  function openCameraOrFallback() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      nativeCameraInputRef.current?.click()
+      return
+    }
+    void openCamera()
+  }
+
   return (
     <div className="manager-report-capture">
       <div className="manager-report-capture-actions">
         <button type="button" className="secondary" onClick={() => void startAudioRecording()} disabled={disabled || captureMode !== null}>
           <Mic size={18} /> Gravar áudio
         </button>
-        <button type="button" className="secondary" onClick={() => void openCamera()} disabled={disabled || captureMode !== null}>
+        <button type="button" className="secondary" onClick={openCameraOrFallback} disabled={disabled || captureMode !== null}>
           <Camera size={18} /> Abrir câmera
         </button>
       </div>
@@ -1424,10 +1460,10 @@ function ManagerReportCapture({
       {captureMode === 'audio' && (
         <div className="manager-report-recorder active" role="status" aria-live="polite">
           <span className="recording-dot" />
-          <strong>Gravando áudio</strong>
-          <span>{String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:{String(recordingSeconds % 60).padStart(2, '0')} / 01:00</span>
-          <button type="button" className="primary compact" onClick={() => finishRecording(true)}>Concluir áudio</button>
-          <button type="button" className="secondary compact" onClick={() => finishRecording(false)}>Cancelar</button>
+          <strong>{requestingPermission ? 'Aguardando permissão do microfone' : 'Gravando áudio'}</strong>
+          <span>{recording ? `${String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:${String(recordingSeconds % 60).padStart(2, '0')} / 01:00` : 'Autorize o acesso para iniciar'}</span>
+          <button type="button" className="primary compact" onClick={() => finishRecording(true)} disabled={!recording}>Concluir áudio</button>
+          <button type="button" className="secondary compact" onClick={() => recording ? finishRecording(false) : closeCapture()}>Cancelar</button>
         </div>
       )}
 
@@ -1457,6 +1493,8 @@ function ManagerReportCapture({
       )}
 
       {captureError && <p className="error">{captureError}</p>}
+      <input ref={nativeAudioInputRef} className="manager-report-native-capture" type="file" accept="audio/*" capture onChange={(event) => void addNativeCapture(event)} aria-label="Gravar áudio pelo aparelho" />
+      <input ref={nativeCameraInputRef} className="manager-report-native-capture" type="file" accept="image/*,video/*" capture="environment" onChange={(event) => void addNativeCapture(event)} aria-label="Usar câmera do aparelho" />
     </div>
   )
 }
@@ -3773,6 +3811,5 @@ function NoticeList({
 }
 
 export default App
-
 
 

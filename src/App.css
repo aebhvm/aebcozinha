@@ -826,6 +826,16 @@ button:disabled {
   min-height: 44px;
 }
 
+.manager-report-native-capture {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .manager-report-recorder {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto auto;
