@@ -131,6 +131,29 @@ export type Notice = {
   created_at: string
 }
 
+export type ManagerReportAttachmentType = 'imagem' | 'audio' | 'video'
+
+export type ManagerReportAttachment = {
+  id: number
+  report_id: number
+  attachment_type: ManagerReportAttachmentType
+  file_name: string
+  mime_type: string
+  size_bytes: number
+  data_url: string
+}
+
+export type ManagerReport = {
+  id: number
+  title: string
+  body: string
+  created_by: number
+  created_by_name: string
+  created_at: string
+  verified_at: string | null
+  attachments: ManagerReportAttachment[]
+}
+
 export type Session = {
   token: string
   user: User

@@ -1,5 +1,6 @@
 import {
   BookOpen,
+  BellRing,
   Boxes,
   CalendarDays,
   Camera,
@@ -13,15 +14,20 @@ import {
   Gauge,
   History,
   ImagePlus,
+  Image as ImageIcon,
   LogOut,
   MapPin,
+  Mic,
   MoreVertical,
   Plus,
+  Paperclip,
   Search,
+  Send,
   ShieldCheck,
   ShoppingCart,
   Trash2,
   Users,
+  Video,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -38,7 +44,7 @@ import { api, clearSession, getSession, saveSession } from './api'
 import { currentMenuDay, menuDays, type MenuDay } from './menuData'
 import './App.css'
 import { formatDate, formatDateTime, todayIso } from './date'
-import type { BreakfastMenu, BreakfastMenuItem, DayPayload, InventoryCheckItem, InventoryCheckSector, InventoryCheckStatus, Notice, Priority, Product, ProductCategory, Schedule, Session, Station, StockCategory, StockMovement, StockMovementType, StockOrder, StockOrderStatus, Task, TechnicalSheet, User } from './types'
+import type { BreakfastMenu, BreakfastMenuItem, DayPayload, InventoryCheckItem, InventoryCheckSector, InventoryCheckStatus, ManagerReport, ManagerReportAttachment, ManagerReportAttachmentType, Notice, Priority, Product, ProductCategory, Schedule, Session, Station, StockCategory, StockMovement, StockMovementType, StockOrder, StockOrderStatus, Task, TechnicalSheet, User } from './types'
 
 type LoadState<T> = {
   data: T | null
@@ -177,6 +183,14 @@ function App() {
         element={
           <Protected session={session} role="gestor">
             <NoticesPage session={session!} onLogout={logout} />
+          </Protected>
+        }
+      />
+      <Route
+        path="/gestor/relatorios"
+        element={
+          <Protected session={session} role="gestor">
+            <ManagerReportsPage session={session!} onLogout={logout} />
           </Protected>
         }
       />
@@ -427,7 +441,9 @@ function Shell({
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [stockPendingCount, setStockPendingCount] = useState(0)
+  const [managerReportPendingCount, setManagerReportPendingCount] = useState(0)
   const previousStockPendingCount = useRef<number | null>(null)
+  const previousManagerReportPendingCount = useRef<number | null>(null)
   const closeSidebar = () => setSidebarOpen(false)
 
   useEffect(() => {
@@ -453,6 +469,35 @@ function Shell({
     return () => {
       cancelled = true
       window.clearInterval(timer)
+    }
+  }, [session.user.role])
+
+  useEffect(() => {
+    if (session.user.role !== 'gestor') return
+    let cancelled = false
+
+    async function loadManagerReportPendingCount() {
+      try {
+        const payload = await api.managerReportPendingCount()
+        if (cancelled) return
+        setManagerReportPendingCount(payload.count)
+        if (previousManagerReportPendingCount.current !== null && payload.count > previousManagerReportPendingCount.current) {
+          playStockNotification()
+        }
+        previousManagerReportPendingCount.current = payload.count
+      } catch {
+        // The badge can recover on the next poll.
+      }
+    }
+
+    const refresh = () => void loadManagerReportPendingCount()
+    void loadManagerReportPendingCount()
+    const timer = window.setInterval(loadManagerReportPendingCount, 30000)
+    window.addEventListener('manager-report-pending-changed', refresh)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      window.removeEventListener('manager-report-pending-changed', refresh)
     }
   }, [session.user.role])
 
@@ -499,6 +544,10 @@ function Shell({
             </Link>
             <Link to="/gestor/mural" onClick={closeSidebar}>
               <FileText size={19} /> Mural
+            </Link>
+            <Link to="/gestor/relatorios" onClick={closeSidebar}>
+              <BellRing size={19} /> Relatórios
+              {managerReportPendingCount > 0 && <span className="nav-badge">{managerReportPendingCount}</span>}
             </Link>
             <Link to="/gestor/cardapio" onClick={closeSidebar}>
               <ClipboardList size={19} /> Cardápio
@@ -1097,6 +1146,305 @@ function StationsPage({ session, onLogout }: { session: Session; onLogout: () =>
             ))}
           </div>
         </div>
+      </section>
+    </Shell>
+  )
+}
+
+const managerReportMaxTotalBytes = 2_500_000
+const managerReportMaxFiles = 6
+
+type ManagerReportDraftAttachment = Omit<ManagerReportAttachment, 'id' | 'report_id'> & { localId: string }
+
+function managerReportFileType(file: File): ManagerReportAttachmentType | null {
+  if (file.type.startsWith('image/')) return 'imagem'
+  if (file.type.startsWith('audio/')) return 'audio'
+  if (file.type.startsWith('video/')) return 'video'
+  return null
+}
+
+function readManagerReportFile(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(new Error('Não foi possível ler o arquivo.'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function formatAttachmentSize(size: number) {
+  return size >= 1024 * 1024
+    ? `${(size / 1024 / 1024).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(size / 1024))} KB`
+}
+
+function ManagerReportMedia({ attachment }: { attachment: ManagerReportAttachment }) {
+  return (
+    <div className="manager-report-media-item">
+      {attachment.attachment_type === 'imagem' && (
+        <img src={attachment.data_url} alt={attachment.file_name} loading="lazy" />
+      )}
+      {attachment.attachment_type === 'audio' && (
+        <audio controls preload="metadata" src={attachment.data_url}>Seu navegador não suporta áudio.</audio>
+      )}
+      {attachment.attachment_type === 'video' && (
+        <video controls preload="metadata" playsInline src={attachment.data_url}>Seu navegador não suporta vídeo.</video>
+      )}
+      <a href={attachment.data_url} download={attachment.file_name} className="manager-report-media-caption">
+        {attachment.attachment_type === 'imagem' ? <ImageIcon size={15} /> : attachment.attachment_type === 'audio' ? <Mic size={15} /> : <Video size={15} />}
+        <span>{attachment.file_name}</span>
+        <small>{formatAttachmentSize(attachment.size_bytes)}</small>
+      </a>
+    </div>
+  )
+}
+
+function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout: () => void }) {
+  const [reports, setReports] = useState<ManagerReport[]>([])
+  const [title, setTitle] = useState('')
+  const [body, setBody] = useState('')
+  const [attachments, setAttachments] = useState<ManagerReportDraftAttachment[]>([])
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'pendentes' | 'todos'>('pendentes')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      setReports(await api.managerReports(startDate || undefined, endDate || undefined))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Não foi possível carregar os relatórios.')
+    } finally {
+      setLoading(false)
+    }
+  }, [endDate, startDate])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const visibleReports = useMemo(() => reports.filter((report) => {
+    if (statusFilter === 'todos') return true
+    return report.created_by !== session.user.id && !report.verified_at
+  }), [reports, session.user.id, statusFilter])
+
+  const pendingCount = useMemo(() => reports.filter((report) => (
+    report.created_by !== session.user.id && !report.verified_at
+  )).length, [reports, session.user.id])
+
+  async function addFiles(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    if (!files.length) return
+    setError('')
+    let totalBytes = attachments.reduce((total, attachment) => total + attachment.size_bytes, 0)
+    const next: ManagerReportDraftAttachment[] = []
+
+    for (const file of files) {
+      const attachmentType = managerReportFileType(file)
+      if (!attachmentType) {
+        setError(`O arquivo “${file.name}” não é uma foto, áudio ou vídeo válido.`)
+        continue
+      }
+      if (attachments.length + next.length >= managerReportMaxFiles) {
+        setError(`Envie no máximo ${managerReportMaxFiles} arquivos por relatório.`)
+        break
+      }
+      if (totalBytes + file.size > managerReportMaxTotalBytes) {
+        setError('Os anexos devem somar no máximo 2,5 MB. Use fotos compactadas e vídeos curtos.')
+        break
+      }
+      try {
+        next.push({
+          localId: `${Date.now()}-${next.length}-${file.name}`,
+          attachment_type: attachmentType,
+          file_name: file.name,
+          mime_type: file.type,
+          size_bytes: file.size,
+          data_url: await readManagerReportFile(file),
+        })
+        totalBytes += file.size
+      } catch (err) {
+        setError(err instanceof Error ? err.message : `Não foi possível ler “${file.name}”.`)
+      }
+    }
+
+    if (next.length > 0) setAttachments((current) => [...current, ...next])
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (saving) return
+    setSaving(true)
+    setError('')
+    setSuccess('')
+    try {
+      const report = await api.createManagerReport({
+        title: title.trim(),
+        body: body.trim(),
+        attachments: attachments.map((attachment) => ({
+          attachment_type: attachment.attachment_type,
+          file_name: attachment.file_name,
+          mime_type: attachment.mime_type,
+          size_bytes: attachment.size_bytes,
+          data_url: attachment.data_url,
+        })),
+      })
+      setReports((current) => [report, ...current.filter((item) => item.id !== report.id)])
+      setTitle('')
+      setBody('')
+      setAttachments([])
+      setSuccess('Relatório enviado aos gestores. Ele está disponível no histórico completo.')
+      window.dispatchEvent(new Event('manager-report-pending-changed'))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Não foi possível enviar o relatório.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function verify(report: ManagerReport) {
+    setError('')
+    setSuccess('')
+    try {
+      const result = await api.verifyManagerReport(report.id)
+      setReports((current) => current.map((item) => (
+        item.id === report.id ? { ...item, verified_at: result.verified_at } : item
+      )))
+      setSuccess('Relatório verificado. A pendência foi removida somente para o seu usuário.')
+      window.dispatchEvent(new Event('manager-report-pending-changed'))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Não foi possível verificar o relatório.')
+    }
+  }
+
+  return (
+    <Shell session={session} onLogout={onLogout} title="Relatórios" subtitle="Comunicação interna entre gestores da cozinha.">
+      <section className="manager-report-summary">
+        <article className="summary-card">
+          <span>Pendentes para você</span>
+          <strong>{pendingCount}</strong>
+          <small>Saem da lista após sua verificação.</small>
+        </article>
+        <article className="summary-card">
+          <span>No período filtrado</span>
+          <strong>{reports.length}</strong>
+          <small>Relatórios encontrados.</small>
+        </article>
+        <article className="summary-card">
+          <span>Com mídia</span>
+          <strong>{reports.filter((report) => report.attachments.length > 0).length}</strong>
+          <small>Fotos, áudios ou vídeos.</small>
+        </article>
+      </section>
+
+      <section className="panel manager-report-compose">
+        <div className="panel-title-row">
+          <div>
+            <h2>Novo relatório</h2>
+            <p className="hint">Registre a ocorrência por escrito e, se necessário, anexe fotos, áudios ou vídeos curtos.</p>
+          </div>
+        </div>
+        <form className="stack" onSubmit={submit}>
+          <label>
+            Título
+            <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} placeholder="Ex.: Ocorrência no turno da noite" required />
+          </label>
+          <label>
+            Relatório escrito
+            <textarea value={body} onChange={(event) => setBody(event.target.value)} maxLength={10000} rows={5} placeholder="Descreva o ocorrido, o local e as providências tomadas..." required />
+          </label>
+          <label className="manager-report-file-picker">
+            <Paperclip size={19} />
+            <span>Anexar fotos, áudios ou vídeos</span>
+            <small>Até {managerReportMaxFiles} arquivos e 2,5 MB no total</small>
+            <input type="file" accept="image/*,audio/*,video/*" multiple onChange={(event) => void addFiles(event)} />
+          </label>
+          {attachments.length > 0 && (
+            <div className="manager-report-draft-files">
+              {attachments.map((attachment) => (
+                <div key={attachment.localId}>
+                  {attachment.attachment_type === 'imagem' ? <ImageIcon size={17} /> : attachment.attachment_type === 'audio' ? <Mic size={17} /> : <Video size={17} />}
+                  <span>{attachment.file_name}</span>
+                  <small>{formatAttachmentSize(attachment.size_bytes)}</small>
+                  <button type="button" className="icon-button secondary" onClick={() => setAttachments((current) => current.filter((item) => item.localId !== attachment.localId))} aria-label={`Remover ${attachment.file_name}`} title="Remover anexo"><X size={15} /></button>
+                </div>
+              ))}
+            </div>
+          )}
+          {error && <p className="error">{error}</p>}
+          {success && <p className="success">{success}</p>}
+          <button className="primary manager-report-submit" disabled={saving || !title.trim() || !body.trim()}>
+            <Send size={18} /> {saving ? 'Enviando...' : 'Enviar relatório'}
+          </button>
+        </form>
+      </section>
+
+      <section className="panel manager-report-inbox">
+        <div className="manager-report-filter-row">
+          <div>
+            <h2>Caixa de relatórios</h2>
+            <p className="hint">A verificação é individual: os outros gestores continuam vendo a pendência até confirmarem.</p>
+          </div>
+          <label>
+            Data inicial
+            <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} max={endDate || undefined} />
+          </label>
+          <label>
+            Data final
+            <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} min={startDate || undefined} />
+          </label>
+          <label>
+            Exibição
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as 'pendentes' | 'todos')}>
+              <option value="pendentes">Pendentes para mim</option>
+              <option value="todos">Histórico completo</option>
+            </select>
+          </label>
+          {(startDate || endDate) && <button type="button" className="secondary compact" onClick={() => { setStartDate(''); setEndDate('') }}>Limpar datas</button>}
+        </div>
+
+        {loading ? <p className="empty">Carregando relatórios...</p> : visibleReports.length === 0 ? (
+          <p className="empty">{statusFilter === 'pendentes' ? 'Nenhum relatório pendente para você.' : 'Nenhum relatório encontrado neste período.'}</p>
+        ) : (
+          <div className="manager-report-list">
+            {visibleReports.map((report) => {
+              const ownReport = report.created_by === session.user.id
+              const pending = !ownReport && !report.verified_at
+              return (
+                <article className={`manager-report-card ${pending ? 'pending' : ''}`} key={report.id}>
+                  <div className="manager-report-card-head">
+                    <div>
+                      <div className="manager-report-title-row">
+                        <h3>{report.title}</h3>
+                        <span className={`pill ${pending ? 'report-pending' : ownReport ? 'report-own' : 'report-verified'}`}>
+                          {pending ? 'Pendente' : ownReport ? 'Enviado por você' : 'Verificado por você'}
+                        </span>
+                      </div>
+                      <p>{report.created_by_name} · {formatDateTime(report.created_at)}</p>
+                    </div>
+                    {pending && (
+                      <button type="button" className="secondary report-verify-button" onClick={() => void verify(report)}>
+                        <CheckCircle2 size={17} /> Marcar como verificado
+                      </button>
+                    )}
+                  </div>
+                  <p className="manager-report-body">{report.body}</p>
+                  {report.attachments.length > 0 && (
+                    <div className="manager-report-media-grid">
+                      {report.attachments.map((attachment) => <ManagerReportMedia key={attachment.id} attachment={attachment} />)}
+                    </div>
+                  )}
+                </article>
+              )
+            })}
+          </div>
+        )}
       </section>
     </Shell>
   )
@@ -3155,10 +3503,6 @@ function NoticeList({
 }
 
 export default App
-
-
-
-
 
 
 

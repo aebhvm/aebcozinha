@@ -1,4 +1,4 @@
-import type { BreakfastMenu, BreakfastMenuItem, DayPayload, InventoryCheckItem, InventoryCheckSector, InventoryCheckStatus, Notice, Priority, Product, ProductCategory, Schedule, Session, Station, StockCategory, StockMovement, StockMovementType, StockOrder, StockOrderStatus, Task, TechnicalSheet, User } from './types'
+import type { BreakfastMenu, BreakfastMenuItem, DayPayload, InventoryCheckItem, InventoryCheckSector, InventoryCheckStatus, ManagerReport, ManagerReportAttachmentType, Notice, Priority, Product, ProductCategory, Schedule, Session, Station, StockCategory, StockMovement, StockMovementType, StockOrder, StockOrderStatus, Task, TechnicalSheet, User } from './types'
 
 const SESSION_KEY = 'cozinha.session'
 
@@ -131,6 +131,32 @@ export const api = {
     request<{ ok: boolean }>(`/api/notices/${id}`, {
       method: 'DELETE',
     }),
+  managerReports: (startDate?: string, endDate?: string) => {
+    const params = new URLSearchParams()
+    if (startDate) params.set('startDate', startDate)
+    if (endDate) params.set('endDate', endDate)
+    const query = params.toString()
+    return request<ManagerReport[]>(`/api/manager-reports${query ? `?${query}` : ''}`)
+  },
+  managerReportPendingCount: () => request<{ count: number }>('/api/manager-reports/pending-count'),
+  createManagerReport: (payload: {
+    title: string
+    body: string
+    attachments: Array<{
+      attachment_type: ManagerReportAttachmentType
+      file_name: string
+      mime_type: string
+      size_bytes: number
+      data_url: string
+    }>
+  }) => request<ManagerReport>('/api/manager-reports', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+  verifyManagerReport: (id: number) => request<{ verified_at: string }>(`/api/manager-reports/${id}/verify`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  }),
   stockCategories: () => request<StockCategory[]>('/api/stock-categories'),
   createStockCategory: (payload: { name: string }) =>
     request<StockCategory>('/api/stock-categories', {
