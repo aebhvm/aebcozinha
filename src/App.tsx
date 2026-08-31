@@ -21,6 +21,7 @@ import {
   MoreVertical,
   Plus,
   Paperclip,
+  Printer,
   Search,
   Send,
   ShieldCheck,
@@ -2183,10 +2184,15 @@ function StockPage({ session, onLogout, canManageCatalog = false }: { session: S
         <div className="panel stock-orders-panel">
           <div className="panel-title-row">
             <h2>Pedidos recebidos</h2>
-            <label className="compact-label">
-              Data
-              <input type="date" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} />
-            </label>
+            <div className="stock-orders-print-actions">
+              <label className="compact-label">
+                Data
+                <input type="date" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} />
+              </label>
+              <button type="button" className="secondary compact print-orders-button" onClick={() => window.print()}>
+                <Printer size={16} /> Imprimir pedidos
+              </button>
+            </div>
           </div>
           <div className="list">
             {orders.map((order) => (

@@ -1535,6 +1535,98 @@ button:disabled {
   gap: 8px;
 }
 
+.stock-orders-print-actions {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+}
+
+.stock-orders-print-actions .compact-label {
+  min-width: 132px;
+}
+
+@media print {
+  body {
+    background: #fff;
+  }
+
+  .sidebar,
+  .mobile-menu-button,
+  .sidebar-scrim,
+  .page-header,
+  .stock-metrics,
+  .stock-management-panel,
+  .print-orders-button {
+    display: none !important;
+  }
+
+  .app-shell,
+  .content,
+  .stock-layout {
+    display: block;
+    min-height: auto;
+    width: 100%;
+  }
+
+  .content {
+    padding: 0;
+  }
+
+  .stock-orders-panel {
+    display: block;
+    padding: 0;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .stock-orders-panel .panel-title-row {
+    align-items: start;
+    margin-bottom: 18px;
+    border-bottom: 1px solid #222;
+    padding-bottom: 10px;
+  }
+
+  .stock-orders-print-actions {
+    align-items: start;
+  }
+
+  .stock-orders-print-actions .compact-label {
+    color: #222;
+  }
+
+  .stock-orders-print-actions input {
+    border: 0;
+    padding: 0;
+    color: #222;
+  }
+
+  .stock-order-card {
+    break-inside: avoid;
+    border-color: #777;
+    box-shadow: none;
+  }
+
+  .stock-order-card .row-actions {
+    display: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .stock-orders-print-actions {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .stock-orders-print-actions .compact-label {
+    min-width: 0;
+  }
+
+  .stock-orders-print-actions .print-orders-button {
+    justify-content: center;
+  }
+}
+
 .stock-order-card {
   padding: 12px;
   gap: 10px;
