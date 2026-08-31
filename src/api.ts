@@ -235,6 +235,10 @@ export const api = {
     }),
   stockPendingCount: () => request<{ count: number }>('/api/stock-orders/pending-count'),
   stockMovements: (date?: string) => request<StockMovement[]>(`/api/stock-movements${date ? `?date=${date}` : ''}`),
+  markStockMovementViewed: (id: number) => request<{ ok: boolean; viewed_at: string }>(`/api/stock-movements/${id}/view`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  }),
   createStockMovement: (payload: { product_id: number; movement_type: StockMovementType; quantity: number; date: string; notes?: string }) =>
     request<StockMovement>('/api/stock-movements', {
       method: 'POST',

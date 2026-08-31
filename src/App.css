@@ -1236,6 +1236,17 @@ button:disabled {
   margin-top: 10px;
 }
 
+.movement-heading-actions {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.movement-view-all-button {
+  margin-top: 10px;
+}
+
 .movement-desperdicio {
   color: #9f2d20;
   background: #fff0ee;
@@ -1243,6 +1254,12 @@ button:disabled {
 
 .movement-saida {
   color: var(--green);
+  background: #edf8f1;
+}
+
+.movement-viewed {
+  color: var(--green);
+  border-color: #b8dfc7;
   background: #edf8f1;
 }
 
@@ -1282,6 +1299,15 @@ button:disabled {
 
   .stock-count-actions button {
     width: 100%;
+  }
+
+  .movement-heading-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .movement-heading-actions .movement-view-all-button {
+    justify-content: center;
   }
 }
 

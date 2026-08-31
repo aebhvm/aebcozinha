@@ -72,6 +72,7 @@ export type StockMovement = {
   notes: string | null
   created_at: string
   created_by_name: string
+  viewed_by_me?: boolean
 }
 
 export type StockOrderItem = {

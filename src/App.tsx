@@ -2325,6 +2325,7 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
   const [loading, setLoading] = useState(true)
   const [savingMovement, setSavingMovement] = useState(false)
   const [savingProduct, setSavingProduct] = useState(false)
+  const [savingViewedId, setSavingViewedId] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [productError, setProductError] = useState('')
   const [success, setSuccess] = useState('')
@@ -2400,6 +2401,36 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
       await load()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao excluir movimentação.')
+    }
+  }
+
+  async function markMovementViewed(movement: StockMovement) {
+    if (movement.viewed_by_me || savingViewedId !== null) return
+    setSavingViewedId(movement.id)
+    setError('')
+    try {
+      await api.markStockMovementViewed(movement.id)
+      setMovements((current) => current.map((item) => item.id === movement.id ? { ...item, viewed_by_me: true } : item))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao marcar movimentação como vista.')
+    } finally {
+      setSavingViewedId(null)
+    }
+  }
+
+  async function markVisibleMovementsViewed() {
+    const pending = visibleMovements.filter((movement) => !movement.viewed_by_me)
+    if (!pending.length || savingViewedId !== null) return
+    setSavingViewedId(-1)
+    setError('')
+    try {
+      await Promise.all(pending.map((movement) => api.markStockMovementViewed(movement.id)))
+      const pendingIds = new Set(pending.map((movement) => movement.id))
+      setMovements((current) => current.map((item) => pendingIds.has(item.id) ? { ...item, viewed_by_me: true } : item))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao marcar os lançamentos como vistos.')
+    } finally {
+      setSavingViewedId(null)
     }
   }
 
@@ -2571,10 +2602,15 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
         <div className="panel-title-row">
           <div>
             <h2>Movimentações de {formatDate(movementDate)}</h2>
-            <div className="segmented-control movement-filter-control" aria-label="Filtrar movimentações">
-              <button type="button" className={movementTypeFilter === 'todos' ? 'active' : ''} onClick={() => setMovementTypeFilter('todos')}>Todas</button>
-              <button type="button" className={movementTypeFilter === 'saida' ? 'active' : ''} onClick={() => setMovementTypeFilter('saida')}>Saídas</button>
-              <button type="button" className={movementTypeFilter === 'desperdicio' ? 'active' : ''} onClick={() => setMovementTypeFilter('desperdicio')}>Desperdício</button>
+            <div className="movement-heading-actions">
+              <div className="segmented-control movement-filter-control" aria-label="Filtrar movimentações">
+                <button type="button" className={movementTypeFilter === 'todos' ? 'active' : ''} onClick={() => setMovementTypeFilter('todos')}>Todas</button>
+                <button type="button" className={movementTypeFilter === 'saida' ? 'active' : ''} onClick={() => setMovementTypeFilter('saida')}>Saídas</button>
+                <button type="button" className={movementTypeFilter === 'desperdicio' ? 'active' : ''} onClick={() => setMovementTypeFilter('desperdicio')}>Desperdício</button>
+              </div>
+              <button type="button" className="secondary compact movement-view-all-button" onClick={() => void markVisibleMovementsViewed()} disabled={savingViewedId !== null || !visibleMovements.some((movement) => !movement.viewed_by_me)}>
+                <CheckCircle2 size={16} /> Marcar como visto
+              </button>
             </div>
           </div>
         </div>
@@ -2594,6 +2630,7 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
                       <div className="row-actions icon-actions stock-movement-actions">
                         <button type="button" className="secondary icon-button" onClick={() => editMovement(movement)} aria-label={`Editar movimentação de ${movement.product_name}`} title="Editar"><Edit3 size={16} /></button>
                         <button type="button" className="danger-button icon-button" onClick={() => void deleteMovement(movement)} aria-label={`Excluir movimentação de ${movement.product_name}`} title="Excluir"><Trash2 size={16} /></button>
+                        {movement.viewed_by_me ? <span className="pill movement-viewed">Visto</span> : <button type="button" className="secondary compact" onClick={() => void markMovementViewed(movement)} disabled={savingViewedId !== null} aria-label={`Marcar movimentação de ${movement.product_name} como vista`}><CheckCircle2 size={15} /> Visto</button>}
                       </div>
                     </td>
                   </tr>

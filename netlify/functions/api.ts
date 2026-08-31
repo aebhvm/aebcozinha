@@ -53,7 +53,7 @@ type Db = {
 let db: Db | null = null
 let ready: Promise<void> | null = null
 
-const SCHEMA_VERSION = '2026-08-22-manager-reports-v1'
+const SCHEMA_VERSION = '2026-08-31-stock-movement-views-v1'
 
 const json = (statusCode: number, body: unknown) => ({
   statusCode,
@@ -348,6 +348,13 @@ async function markSchemaCurrent() {
         active integer not null default 1,
         created_at text not null default current_timestamp
       )`,
+      `create table if not exists stock_movement_views (
+        movement_id integer not null references stock_movements(id) on delete cascade,
+        user_id integer not null references users(id) on delete cascade,
+        viewed_at text not null,
+        primary key(movement_id, user_id)
+      )`,
+      'create index if not exists idx_stock_movement_views_user on stock_movement_views(user_id, movement_id)',
       {
         sql: `insert into app_meta (key, value, updated_at) values (?, ?, ?)
           on conflict(key) do update set value = excluded.value, updated_at = excluded.updated_at`,
@@ -658,25 +665,27 @@ async function getStockCategories() {
   return result.rows
 }
 
-async function getStockMovements(date?: string) {
+async function getStockMovements(user: AuthUser, date?: string) {
   const conditions = ['m.active = 1']
-  const args: string[] = []
+  const args: unknown[] = [user.id]
   if (date) {
     conditions.push('m.movement_date = ?')
     args.push(date)
   }
   const result = await getDb().execute({
     sql: `select m.id, m.product_id, p.name as product_name, m.movement_type, m.quantity, m.unit,
-        m.movement_date, m.notes, m.created_at, u.name as created_by_name
+        m.movement_date, m.notes, m.created_at, u.name as created_by_name,
+        case when v.viewed_at is null then false else true end as viewed_by_me
       from stock_movements m
       join products p on p.id = m.product_id
       join users u on u.id = m.created_by
+      left join stock_movement_views v on v.movement_id = m.id and v.user_id = ?
       where ${conditions.join(' and ')}
       order by m.id desc
       limit 200`,
     args,
   })
-  return result.rows.map((row) => ({ ...row, id: Number(row.id), product_id: Number(row.product_id), quantity: Number(row.quantity) }))
+  return result.rows.map((row) => ({ ...row, id: Number(row.id), product_id: Number(row.product_id), quantity: Number(row.quantity), viewed_by_me: Boolean(row.viewed_by_me) }))
 }
 
 async function getInventoryCheckSectors() {
@@ -1387,10 +1396,10 @@ export async function handler(event: Event) {
 
     if (path === '/stock-movements') {
       if (event.httpMethod === 'GET') {
-        await requireUser(event)
+        const user = await requireUser(event)
         const date = url.searchParams.get('date') ?? undefined
         if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(400, { error: 'Data invalida.' })
-        return json(200, await getStockMovements(date))
+        return json(200, await getStockMovements(user, date))
       }
       if (event.httpMethod === 'POST') {
         const user = await requireUser(event)
@@ -1416,15 +1425,33 @@ export async function handler(event: Event) {
             values (?, ?, ?, ?, ?, ?, ?) returning id`,
           args: [body.product_id, body.movement_type, body.quantity, String(product.unit), body.date, body.notes?.trim() || null, user.id],
         })
-        const movements = await getStockMovements(body.date)
+        const movements = await getStockMovements(user, body.date)
         const movement = movements.find((item) => Number(item.id) === Number(result.rows[0]?.id))
         return json(201, movement)
       }
     }
 
+    const stockMovementViewMatch = path.match(/^\/stock-movements\/(\d+)\/view$/)
+    if (stockMovementViewMatch && event.httpMethod === 'POST') {
+      const user = await requireUser(event)
+      const movementId = Number(stockMovementViewMatch[1])
+      const movement = await getDb().execute({
+        sql: 'select id from stock_movements where id = ? and active = 1',
+        args: [movementId],
+      })
+      if (!movement.rows[0]) return json(404, { error: 'Movimentacao nao encontrada.' })
+      const viewedAt = brazilNowIso()
+      await getDb().execute({
+        sql: `insert into stock_movement_views (movement_id, user_id, viewed_at) values (?, ?, ?)
+          on conflict(movement_id, user_id) do update set viewed_at = excluded.viewed_at`,
+        args: [movementId, user.id, viewedAt],
+      })
+      return json(200, { ok: true, viewed_at: viewedAt })
+    }
+
     const stockMovementMatch = path.match(/^\/stock-movements\/(\d+)$/)
     if (stockMovementMatch && event.httpMethod === 'PUT') {
-      await requireUser(event)
+      const user = await requireUser(event)
       const body = parseBody(
         event,
         z.object({
@@ -1448,7 +1475,7 @@ export async function handler(event: Event) {
         args: [body.product_id, body.movement_type, body.quantity, String(product.unit), body.date, body.notes?.trim() || null, Number(stockMovementMatch[1])],
       })
       if (!result.rows[0]) return json(404, { error: 'Movimentacao nao encontrada.' })
-      const movements = await getStockMovements(body.date)
+      const movements = await getStockMovements(user, body.date)
       return json(200, movements.find((item) => Number(item.id) === Number(stockMovementMatch[1])))
     }
 
