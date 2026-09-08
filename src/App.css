@@ -1825,6 +1825,18 @@ button:disabled {
   align-items: start;
 }
 
+.inventory-layout-collaborator {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.inventory-smart-sector-label {
+  align-self: end;
+  padding-bottom: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .inventory-panel h2 {
   margin-top: 0;
 }
@@ -2207,6 +2219,11 @@ button:disabled {
 
   .inventory-manage-panel > form:nth-of-type(2) {
     order: 2;
+  }
+
+  .inventory-smart-sector-label {
+    align-self: start;
+    padding-bottom: 0;
   }
 
   .inventory-sector-list {

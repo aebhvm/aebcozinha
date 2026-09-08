@@ -228,6 +228,14 @@ function App() {
         }
       />
       <Route
+        path="/colaborador/conferencia"
+        element={
+          <Protected session={session} role="colaborador">
+            <InventoryCheckPage session={session!} onLogout={logout} />
+          </Protected>
+        }
+      />
+      <Route
         path="/gestor/contagem-insumos"
         element={
           <ProtectedRoles session={session} roles={['gestor', 'estoquista', 'colaborador']}>
@@ -593,6 +601,9 @@ function Shell({
             </Link>
             <Link to="/colaborador/contagem-insumos" onClick={closeSidebar}>
               <ClipboardList size={19} /> Saídas e desperdício
+            </Link>
+            <Link to="/colaborador/conferencia" onClick={closeSidebar}>
+              <CheckCircle2 size={19} /> Conferência
             </Link>
           </nav>
         )}
@@ -2650,6 +2661,13 @@ const inventoryStatusLabels: Record<InventoryCheckStatus, string> = {
   produzir: 'Produzir',
 }
 
+function inventoryStatusLabel(status: InventoryCheckStatus, sectorName?: string | null) {
+  const isSmart = sectorName?.trim().toLocaleLowerCase('pt-BR') === 'smart'
+  if (isSmart && status === 'pedir') return 'Fazer'
+  if (isSmart && status === 'produzir') return 'Faltou fazer'
+  return inventoryStatusLabels[status]
+}
+
 function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout: () => void }) {
   const formRef = useRef<HTMLFormElement>(null)
   const sectorFormRef = useRef<HTMLFormElement>(null)
@@ -2663,6 +2681,8 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
   const [sectorFilter, setSectorFilter] = useState('todos')
   const [error, setError] = useState('')
   const [sectorError, setSectorError] = useState('')
+  const canManage = session.user.role === 'gestor'
+  const isCollaborator = session.user.role === 'colaborador'
 
   async function load() {
     const [itemsPayload, sectorsPayload] = await Promise.all([
@@ -2792,21 +2812,23 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
     )
   }, [reportItems])
 
+  const reportStatusLabel = (status: InventoryCheckStatus) => isCollaborator ? inventoryStatusLabel(status, 'smart') : inventoryStatusLabels[status]
+
   return (
-    <Shell session={session} onLogout={onLogout} title="Conferência" subtitle="Checklist dos produtos que temos na casa e do que precisa pedir ou produzir.">
+    <Shell session={session} onLogout={onLogout} title="Conferência" subtitle={isCollaborator ? 'Conferência do setor Smart.' : 'Checklist dos produtos que temos na casa e do que precisa pedir ou produzir.'}>
       <section className="panel inventory-report inventory-report-summary">
         <div className="panel-title-row inventory-report-title">
           <h2>Relatório do dia</h2>
           <span>{formatDate(checkDate)}</span>
         </div>
         {reportItems.length === 0 ? (
-          <p className="empty">Nenhum item marcado para pedir ou produzir nesta data.</p>
+          <p className="empty">Nenhum item marcado para {reportStatusLabel('pedir').toLowerCase()} ou {reportStatusLabel('produzir').toLowerCase()} nesta data.</p>
         ) : (
           <div className="inventory-report-grid compact-report-grid">
             {(['pedir', 'produzir'] as InventoryCheckStatus[]).map((status) => (
               <article className={`inventory-report-card modern-report-card status-${status}`} key={status}>
                 <div className="report-card-header">
-                  <strong>{inventoryStatusLabels[status]}</strong>
+                  <strong>{reportStatusLabel(status)}</strong>
                   <span>{reportByStatus[status].length}</span>
                 </div>
                 {reportByStatus[status].length === 0 ? (
@@ -2827,8 +2849,8 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
         )}
       </section>
 
-      <section className="grid two inventory-layout">
-        <div className="panel inventory-manage-panel">
+      <section className={`grid two inventory-layout ${isCollaborator ? 'inventory-layout-collaborator' : ''}`}>
+        {canManage && <div className="panel inventory-manage-panel">
           <form ref={formRef} className="stack inventory-compact-form" onSubmit={submitItem}>
             <h2>{editingId ? 'Editar produto' : 'Novo produto'}</h2>
             <label>
@@ -2889,7 +2911,7 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
               </article>
             ))}
           </div>
-        </div>
+        </div>}
         <div className="panel inventory-panel">
           <div className="panel-title-row inventory-filter-row">
             <h2>Checklist</h2>
@@ -2897,16 +2919,20 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
               Data
               <input type="date" value={checkDate} onChange={(event) => setCheckDate(event.target.value)} />
             </label>
-            <label className="compact-label">
-              Freezer
-              <select value={sectorFilter} onChange={(event) => setSectorFilter(event.target.value)}>
-                <option value="todos">Todos</option>
-                <option value="sem-setor">Sem setor</option>
-                {sectors.map((sector) => (
-                  <option key={sector.id} value={sector.id}>{sector.name}</option>
-                ))}
-              </select>
-            </label>
+            {isCollaborator ? (
+              <span className="inventory-smart-sector-label">Setor: Smart</span>
+            ) : (
+              <label className="compact-label">
+                Freezer
+                <select value={sectorFilter} onChange={(event) => setSectorFilter(event.target.value)}>
+                  <option value="todos">Todos</option>
+                  <option value="sem-setor">Sem setor</option>
+                  {sectors.map((sector) => (
+                    <option key={sector.id} value={sector.id}>{sector.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
           <div className="inventory-list">
             {Object.entries(groupedItems).map(([sector, sectorItems]) => (
@@ -2919,25 +2945,25 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
                     </div>
                     <div className="inventory-status-options" aria-label={`Status de ${item.name}`}>
                       {(['ok', 'pedir', 'produzir'] as InventoryCheckStatus[]).map((status) => (
-                        <label className={`inventory-check-option status-${status}`} key={status} title={inventoryStatusLabels[status]}>
+                        <label className={`inventory-check-option status-${status}`} key={status} title={inventoryStatusLabel(status, item.sector_name)}>
                           <input
                             type="radio"
                             name={`inventory-${checkDate}-${item.id}`}
                             checked={item.status === status}
                             onChange={() => changeItemStatus(item, status)}
                           />
-                          {inventoryStatusLabels[status]}
+                          {inventoryStatusLabel(status, item.sector_name)}
                         </label>
                       ))}
                     </div>
-                    <div className="row-actions icon-actions">
+                    {canManage && <div className="row-actions icon-actions">
                       <button type="button" className="secondary icon-button" onClick={() => editItem(item)} aria-label={`Editar ${item.name}`} title="Editar">
                         <Edit3 size={16} />
                       </button>
                       <button type="button" className="danger-button icon-button" onClick={() => deleteItem(item)} aria-label={`Excluir ${item.name}`} title="Excluir">
                         <Trash2 size={16} />
                       </button>
-                    </div>
+                    </div>}
                   </article>
                 ))}
               </section>

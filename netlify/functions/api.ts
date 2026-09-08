@@ -53,7 +53,7 @@ type Db = {
 let db: Db | null = null
 let ready: Promise<void> | null = null
 
-const SCHEMA_VERSION = '2026-08-31-stock-movement-views-v1'
+const SCHEMA_VERSION = '2026-09-08-smart-conference-v1'
 
 const json = (statusCode: number, body: unknown) => ({
   statusCode,
@@ -688,18 +688,20 @@ async function getStockMovements(user: AuthUser, date?: string) {
   return result.rows.map((row) => ({ ...row, id: Number(row.id), product_id: Number(row.product_id), quantity: Number(row.quantity), viewed_by_me: Boolean(row.viewed_by_me) }))
 }
 
-async function getInventoryCheckSectors() {
-  const result = await getDb().execute('select id, name, active, created_at from inventory_check_sectors where active = 1 order by name')
+async function getInventoryCheckSectors(user?: AuthUser) {
+  const smartOnly = user?.role === 'colaborador' ? " and lower(trim(name)) = 'smart'" : ''
+  const result = await getDb().execute(`select id, name, active, created_at from inventory_check_sectors where active = 1${smartOnly} order by name`)
   return result.rows
 }
 
-async function getInventoryCheckItems(date: string) {
+async function getInventoryCheckItems(date: string, user?: AuthUser) {
+  const smartOnly = user?.role === 'colaborador' ? " and lower(trim(coalesce(s.name, ''))) = 'smart'" : ''
   const result = await getDb().execute({
     sql: `select i.id, i.name, i.sector_id, s.name as sector_name, r.status, r.record_date as checked_date, i.active, i.created_at, coalesce(r.updated_at, i.updated_at) as updated_at
       from inventory_check_items i
       left join inventory_check_sectors s on s.id = i.sector_id and s.active = 1
       left join inventory_check_records r on r.item_id = i.id and r.record_date = ?
-      where i.active = 1
+      where i.active = 1${smartOnly}
       order by coalesce(s.name, 'Sem setor'), i.name`,
     args: [date],
   })
@@ -1244,10 +1246,11 @@ export async function handler(event: Event) {
     }
 
     if (path === '/inventory-check-sectors') {
-      await requireUser(event, 'gestor')
       if (event.httpMethod === 'GET') {
-        return json(200, await getInventoryCheckSectors())
+        const user = await requireUser(event)
+        return json(200, await getInventoryCheckSectors(user))
       }
+      await requireUser(event, 'gestor')
       if (event.httpMethod === 'POST') {
         const body = parseBody(event, z.object({ name: z.string().min(2) }))
         const result = await getDb().execute({
@@ -1278,12 +1281,13 @@ export async function handler(event: Event) {
     }
 
     if (path === '/inventory-check-items') {
-      await requireUser(event, 'gestor')
       if (event.httpMethod === 'GET') {
+        const user = await requireUser(event)
         const date = url.searchParams.get('date') ?? brazilTodayIso()
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(400, { error: 'Data inválida.' })
-        return json(200, await getInventoryCheckItems(date))
+        return json(200, await getInventoryCheckItems(date, user))
       }
+      await requireUser(event, 'gestor')
       if (event.httpMethod === 'POST') {
         const body = parseBody(event, z.object({ name: z.string().min(2), sector_id: z.number().int().positive().nullable().optional() }))
         const result = await getDb().execute({
@@ -1318,7 +1322,7 @@ export async function handler(event: Event) {
 
     const inventoryCheckStatusMatch = path.match(/^\/inventory-check-items\/(\d+)\/status$/)
     if (inventoryCheckStatusMatch && event.httpMethod === 'PUT') {
-      const actor = await requireUser(event, 'gestor')
+      const actor = await requireAnyRole(event, ['gestor', 'colaborador'])
       const body = parseBody(
         event,
         z.object({
@@ -1327,7 +1331,13 @@ export async function handler(event: Event) {
         }),
       )
       const itemId = Number(inventoryCheckStatusMatch[1])
-      const exists = await getDb().execute({ sql: 'select id from inventory_check_items where id = ? and active = 1', args: [itemId] })
+      const exists = await getDb().execute({
+        sql: `select i.id
+          from inventory_check_items i
+          left join inventory_check_sectors s on s.id = i.sector_id and s.active = 1
+          where i.id = ? and i.active = 1${actor.role === 'colaborador' ? " and lower(trim(coalesce(s.name, ''))) = 'smart'" : ''}`,
+        args: [itemId],
+      })
       if (exists.rows.length === 0) return json(404, { error: 'Item de conferência não encontrado.' })
       await getDb().execute({
         sql: `insert into inventory_check_records (item_id, record_date, status, checked_by, updated_at)
@@ -1335,7 +1345,7 @@ export async function handler(event: Event) {
           on conflict(item_id, record_date) do update set status = excluded.status, checked_by = excluded.checked_by, updated_at = excluded.updated_at`,
         args: [itemId, body.date, body.status, actor.id, brazilNowIso()],
       })
-      const rows = await getInventoryCheckItems(body.date)
+      const rows = await getInventoryCheckItems(body.date, actor)
       return json(200, rows.find((row) => Number(row.id) === itemId))
     }
 
