@@ -2668,6 +2668,19 @@ function inventoryStatusLabel(status: InventoryCheckStatus, sectorName?: string 
   return inventoryStatusLabels[status]
 }
 
+async function withInventoryCheckRetry<T>(operation: () => Promise<T>) {
+  try {
+    return await operation()
+  } catch (firstError) {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 250))
+    try {
+      return await operation()
+    } catch {
+      throw firstError
+    }
+  }
+}
+
 function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout: () => void }) {
   const formRef = useRef<HTMLFormElement>(null)
   const sectorFormRef = useRef<HTMLFormElement>(null)
@@ -2681,22 +2694,44 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
   const [sectorFilter, setSectorFilter] = useState('todos')
   const [error, setError] = useState('')
   const [sectorError, setSectorError] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const [loading, setLoading] = useState(true)
   const canManage = session.user.role === 'gestor'
   const isCollaborator = session.user.role === 'colaborador'
 
-  async function load() {
-    const [itemsPayload, sectorsPayload] = await Promise.all([
-      api.inventoryCheckItems(checkDate),
-      api.inventoryCheckSectors(),
-    ])
-    setItems(itemsPayload)
-    setSectors(sectorsPayload)
-  }
+  const load = useCallback(async (date: string) => {
+    setLoading(true)
+    setLoadError('')
+    try {
+      const itemsPayload = await withInventoryCheckRetry(() => api.inventoryCheckItems(date))
+      setItems(itemsPayload)
+
+      if (isCollaborator) {
+        setSectors([])
+      } else {
+        try {
+          setSectors(await withInventoryCheckRetry(() => api.inventoryCheckSectors()))
+        } catch {
+          setSectors([])
+          setLoadError('A lista foi carregada, mas os setores não puderam ser atualizados. Tente novamente.')
+        }
+      }
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Não foi possível carregar a lista do dia.')
+    } finally {
+      setLoading(false)
+    }
+  }, [isCollaborator])
 
   useEffect(() => {
-    void load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkDate])
+    void load(checkDate)
+  }, [checkDate, load])
+
+  useEffect(() => {
+    if (editingId === null) return
+    formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    formRef.current?.querySelector('input')?.focus()
+  }, [editingId])
 
   async function submitSector(event: FormEvent) {
     event.preventDefault()
@@ -2709,7 +2744,7 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
       }
       setEditingSectorId(null)
       setSectorForm({ name: '', active: true })
-      await load()
+      await load(checkDate)
     } catch (err) {
       setSectorError(err instanceof Error ? err.message : 'Erro ao salvar setor.')
     }
@@ -2733,7 +2768,7 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
     if (!window.confirm('Excluir o setor/freezer "' + sector.name + '"? Os produtos continuam cadastrados, mas ficam sem setor.')) return
     await api.deleteInventoryCheckSector(sector.id)
     if (editingSectorId === sector.id) cancelSectorEdit()
-    await load()
+    await load(checkDate)
   }
 
   async function submitItem(event: FormEvent) {
@@ -2748,7 +2783,7 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
       }
       setEditingId(null)
       setForm({ name: '', sector_id: '', active: true })
-      await load()
+      await load(checkDate)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao salvar item.')
     }
@@ -2758,8 +2793,6 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
     setEditingId(item.id)
     setForm({ name: item.name, sector_id: item.sector_id ? String(item.sector_id) : '', active: Boolean(item.active) })
     setError('')
-    formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    formRef.current?.querySelector('input')?.focus()
   }
 
   function cancelEdit() {
@@ -2772,7 +2805,7 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
     if (!window.confirm('Excluir o item "' + item.name + '" da conferência?')) return
     await api.deleteInventoryCheckItem(item.id)
     if (editingId === item.id) cancelEdit()
-    await load()
+    await load(checkDate)
   }
 
   async function changeItemStatus(item: InventoryCheckItem, status: InventoryCheckStatus) {
@@ -2935,40 +2968,46 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
             )}
           </div>
           <div className="inventory-list">
-            {Object.entries(groupedItems).map(([sector, sectorItems]) => (
-              <section className="inventory-sector-group" key={sector}>
-                <h3>{sector}</h3>
-                {sectorItems.map((item) => (
-                  <article className="inventory-item-card" key={item.id}>
-                    <div className="inventory-item-main">
-                      <strong>{item.name}</strong>
-                    </div>
-                    <div className="inventory-status-options" aria-label={`Status de ${item.name}`}>
-                      {(['ok', 'pedir', 'produzir'] as InventoryCheckStatus[]).map((status) => (
-                        <label className={`inventory-check-option status-${status}`} key={status} title={inventoryStatusLabel(status, item.sector_name)}>
-                          <input
-                            type="radio"
-                            name={`inventory-${checkDate}-${item.id}`}
-                            checked={item.status === status}
-                            onChange={() => changeItemStatus(item, status)}
-                          />
-                          {inventoryStatusLabel(status, item.sector_name)}
-                        </label>
-                      ))}
-                    </div>
-                    {canManage && <div className="row-actions icon-actions">
-                      <button type="button" className="secondary icon-button" onClick={() => editItem(item)} aria-label={`Editar ${item.name}`} title="Editar">
-                        <Edit3 size={16} />
-                      </button>
-                      <button type="button" className="danger-button icon-button" onClick={() => deleteItem(item)} aria-label={`Excluir ${item.name}`} title="Excluir">
-                        <Trash2 size={16} />
-                      </button>
-                    </div>}
-                  </article>
-                ))}
-              </section>
-            ))}
-            {visibleItems.length === 0 && <p className="empty">Nenhum item neste filtro.</p>}
+            {loading && items.length === 0 ? (
+              <p className="empty">Carregando a lista do dia...</p>
+            ) : Object.keys(groupedItems).length === 0 ? (
+              <p className="empty">Nenhum produto ativo nesta data.</p>
+            ) : (
+              Object.entries(groupedItems).map(([sector, sectorItems]) => (
+                <section className="inventory-sector-group" key={sector}>
+                  <h3>{sector}</h3>
+                  {sectorItems.map((item) => (
+                    <article className="inventory-item-card" key={item.id}>
+                      <div className="inventory-item-main">
+                        <strong>{item.name}</strong>
+                      </div>
+                      <div className="inventory-status-options" aria-label={`Status de ${item.name}`}>
+                        {(['ok', 'pedir', 'produzir'] as InventoryCheckStatus[]).map((status) => (
+                          <label className={`inventory-check-option status-${status}`} key={status} title={inventoryStatusLabel(status, item.sector_name)}>
+                            <input
+                              type="radio"
+                              name={`inventory-${checkDate}-${item.id}`}
+                              checked={item.status === status}
+                              onChange={() => changeItemStatus(item, status)}
+                            />
+                            {inventoryStatusLabel(status, item.sector_name)}
+                          </label>
+                        ))}
+                      </div>
+                      {canManage && <div className="row-actions icon-actions">
+                        <button type="button" className="secondary icon-button" onClick={() => editItem(item)} aria-label={`Editar ${item.name}`} title="Editar">
+                          <Edit3 size={16} />
+                        </button>
+                        <button type="button" className="danger-button icon-button" onClick={() => deleteItem(item)} aria-label={`Excluir ${item.name}`} title="Excluir">
+                          <Trash2 size={16} />
+                        </button>
+                      </div>}
+                    </article>
+                  ))}
+                </section>
+              ))
+            )}
+            {loadError && <p className="error inventory-load-error">{loadError} <button type="button" className="secondary compact" onClick={() => void load(checkDate)}>Tentar novamente</button></p>}
           </div>
         </div>
       </section>    </Shell>
