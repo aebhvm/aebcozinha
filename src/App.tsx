@@ -3167,14 +3167,18 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
                       </div>
                       <div className="inventory-status-options" aria-label={`Status de ${item.name}`}>
                         {(['ok', 'pedir', 'produzir'] as InventoryCheckStatus[]).map((status) => (
-                          <label className={`inventory-check-option status-${status}`} key={status} title={inventoryStatusLabel(status, item.sector_name)}>
+                          <label
+                            className={`inventory-check-option status-${status}`}
+                            key={status}
+                            title={inventoryStatusLabel(status, item.sector_name)}
+                            onClick={() => {
+                              if (isCollaborator && status === 'produzir') setPhotoItem(item)
+                            }}
+                          >
                             <input
                               type="radio"
                               name={`inventory-${checkDate}-${item.id}`}
                               checked={item.status === status}
-                              onClick={() => {
-                                if (isCollaborator && status === 'produzir' && item.status === status) setPhotoItem(item)
-                              }}
                               onChange={() => changeItemStatus(item, status)}
                             />
                             {inventoryStatusLabel(status, item.sector_name)}
