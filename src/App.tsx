@@ -1860,6 +1860,14 @@ function InventoryCheckPhotoCapture({
     }
   }, [stream])
 
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [])
+
   async function savePhoto(file: File) {
     if (!file.type.startsWith('image/')) {
       setError('Escolha uma imagem válida.')
@@ -1909,33 +1917,35 @@ function InventoryCheckPhotoCapture({
   }
 
   return (
-    <div className="inventory-photo-capture" role="dialog" aria-label={`Registrar foto de ${itemName}`}>
-      <div className="inventory-photo-capture-head">
-        <div>
-          <strong>Registrar foto</strong>
-          <span>{itemName}</span>
+    <div className="inventory-photo-capture-backdrop">
+      <div className="inventory-photo-capture" role="dialog" aria-modal="true" aria-label={`Registrar foto de ${itemName}`}>
+        <div className="inventory-photo-capture-head">
+          <div>
+            <strong>Registrar foto</strong>
+            <span>{itemName}</span>
+          </div>
+          <button type="button" className="secondary icon-button" onClick={cancel} aria-label="Fechar câmera" title="Fechar câmera"><X size={17} /></button>
         </div>
-        <button type="button" className="secondary icon-button" onClick={cancel} aria-label="Fechar câmera" title="Fechar câmera"><X size={17} /></button>
-      </div>
-      {stream ? (
-        <video ref={videoRef} className="inventory-photo-preview" muted playsInline autoPlay aria-label="Pré-visualização da câmera" />
-      ) : (
-        <div className="inventory-photo-empty">
-          <Camera size={28} />
-          <span>{error || 'Abrindo câmera...'}</span>
-        </div>
-      )}
-      {error && stream && <p className="error">{error}</p>}
-      <div className="inventory-photo-actions">
         {stream ? (
-          <button type="button" className="primary" onClick={() => void takePhoto()} disabled={saving}><Camera size={18} /> Tirar foto</button>
+          <video ref={videoRef} className="inventory-photo-preview" muted playsInline autoPlay aria-label="Pré-visualização da câmera" />
         ) : (
-          <button type="button" className="secondary" onClick={() => void openCamera()} disabled={saving}><Camera size={18} /> Tentar abrir câmera</button>
+          <div className="inventory-photo-empty">
+            <Camera size={28} />
+            <span>{error || 'Abrindo câmera...'}</span>
+          </div>
         )}
-        <button type="button" className="secondary" onClick={() => inputRef.current?.click()} disabled={saving}>Escolher foto</button>
-        <button type="button" className="secondary" onClick={cancel} disabled={saving}>Cancelar</button>
+        {error && stream && <p className="error">{error}</p>}
+        <div className="inventory-photo-actions">
+          {stream ? (
+            <button type="button" className="primary" onClick={() => void takePhoto()} disabled={saving}><Camera size={18} /> Tirar foto</button>
+          ) : (
+            <button type="button" className="secondary" onClick={() => void openCamera()} disabled={saving}><Camera size={18} /> Tentar abrir câmera</button>
+          )}
+          <button type="button" className="secondary" onClick={() => inputRef.current?.click()} disabled={saving}>Escolher foto</button>
+          <button type="button" className="secondary" onClick={cancel} disabled={saving}>Cancelar</button>
+        </div>
+        <input ref={inputRef} className="manager-report-native-capture" type="file" accept="image/*" capture="environment" onChange={(event) => void choosePhoto(event)} aria-label="Escolher foto da conferência" />
       </div>
-      <input ref={inputRef} className="manager-report-native-capture" type="file" accept="image/*" capture="environment" onChange={(event) => void choosePhoto(event)} aria-label="Escolher foto da conferência" />
     </div>
   )
 }

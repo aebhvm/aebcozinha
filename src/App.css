@@ -836,14 +836,29 @@ button:disabled {
   white-space: nowrap;
 }
 
+.inventory-photo-capture-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  background: rgba(13, 24, 17, 0.56);
+}
+
 .inventory-photo-capture {
   display: grid;
   gap: 10px;
-  margin-bottom: 14px;
+  width: min(100%, 560px);
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  margin: 0;
   padding: 12px;
   border: 1px solid #b9d6c4;
   border-radius: 10px;
   background: #f4fbf6;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.3);
 }
 
 .inventory-photo-capture-head {
@@ -867,7 +882,8 @@ button:disabled {
 .inventory-photo-empty {
   width: 100%;
   min-height: 180px;
-  max-height: 420px;
+  max-height: min(420px, 52vh);
+  max-height: min(420px, 52dvh);
   border-radius: 8px;
   background: #17231c;
 }
