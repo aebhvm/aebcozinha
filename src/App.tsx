@@ -1794,6 +1794,152 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
   )
 }
 
+function InventoryCheckPhotoCapture({
+  itemName,
+  onCapture,
+  onCancel,
+}: {
+  itemName: string
+  onCapture: (file: File) => Promise<void>
+  onCancel: () => void
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const [stream, setStream] = useState<MediaStream | null>(null)
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const stopStream = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+    setStream(null)
+  }, [])
+
+  const openCamera = useCallback(async () => {
+    setError('')
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('A câmera ao vivo não está disponível. Escolha uma foto do aparelho.')
+      return
+    }
+    try {
+      const nextStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      })
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+      streamRef.current = nextStream
+      setStream(nextStream)
+    } catch (captureError) {
+      if (captureError instanceof DOMException && (captureError.name === 'NotAllowedError' || captureError.name === 'PermissionDeniedError')) {
+        setError('Permissão da câmera negada. Libere o acesso no navegador ou escolha uma foto do aparelho.')
+      } else if (captureError instanceof DOMException && captureError.name === 'NotFoundError') {
+        setError('Nenhuma câmera foi encontrada. Escolha uma foto do aparelho.')
+      } else {
+        setError('Não foi possível abrir a câmera. Escolha uma foto do aparelho.')
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    void openCamera()
+    return () => {
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+    }
+  }, [openCamera])
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream
+      void videoRef.current.play().catch(() => undefined)
+    }
+  }, [stream])
+
+  async function savePhoto(file: File) {
+    if (!file.type.startsWith('image/')) {
+      setError('Escolha uma imagem válida.')
+      return
+    }
+    if (file.size > 2_500_000) {
+      setError('A foto deve ter no máximo 2,5 MB.')
+      return
+    }
+    setSaving(true)
+    try {
+      await onCapture(file)
+    } catch (captureError) {
+      setError(captureError instanceof Error ? captureError.message : 'Não foi possível registrar a foto.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function takePhoto() {
+    const video = videoRef.current
+    if (!video || !video.videoWidth || !video.videoHeight) {
+      setError('Aguarde a imagem da câmera aparecer para tirar a foto.')
+      return
+    }
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    canvas.getContext('2d')?.drawImage(video, 0, 0)
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.78))
+    if (!blob) {
+      setError('Não foi possível capturar a foto.')
+      return
+    }
+    await savePhoto(new File([blob], `conferencia-${Date.now()}.jpg`, { type: 'image/jpeg' }))
+  }
+
+  async function choosePhoto(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (file) await savePhoto(file)
+  }
+
+  function cancel() {
+    stopStream()
+    onCancel()
+  }
+
+  return (
+    <div className="inventory-photo-capture" role="dialog" aria-label={`Registrar foto de ${itemName}`}>
+      <div className="inventory-photo-capture-head">
+        <div>
+          <strong>Registrar foto</strong>
+          <span>{itemName}</span>
+        </div>
+        <button type="button" className="secondary icon-button" onClick={cancel} aria-label="Fechar câmera" title="Fechar câmera"><X size={17} /></button>
+      </div>
+      {stream ? (
+        <video ref={videoRef} className="inventory-photo-preview" muted playsInline autoPlay aria-label="Pré-visualização da câmera" />
+      ) : (
+        <div className="inventory-photo-empty">
+          <Camera size={28} />
+          <span>{error || 'Abrindo câmera...'}</span>
+        </div>
+      )}
+      {error && stream && <p className="error">{error}</p>}
+      <div className="inventory-photo-actions">
+        {stream ? (
+          <button type="button" className="primary" onClick={() => void takePhoto()} disabled={saving}><Camera size={18} /> Tirar foto</button>
+        ) : (
+          <button type="button" className="secondary" onClick={() => void openCamera()} disabled={saving}><Camera size={18} /> Tentar abrir câmera</button>
+        )}
+        <button type="button" className="secondary" onClick={() => inputRef.current?.click()} disabled={saving}>Escolher foto</button>
+        <button type="button" className="secondary" onClick={cancel} disabled={saving}>Cancelar</button>
+      </div>
+      <input ref={inputRef} className="manager-report-native-capture" type="file" accept="image/*" capture="environment" onChange={(event) => void choosePhoto(event)} aria-label="Escolher foto da conferência" />
+    </div>
+  )
+}
+
 function NoticesPage({ session, onLogout }: { session: Session; onLogout: () => void }) {
   const formRef = useRef<HTMLFormElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -2703,6 +2849,7 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
   const [sectorError, setSectorError] = useState('')
   const [loadError, setLoadError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [photoItem, setPhotoItem] = useState<InventoryCheckItem | null>(null)
   const canManage = session.user.role === 'gestor'
   const isCollaborator = session.user.role === 'colaborador'
 
@@ -2815,11 +2962,28 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
     await load(checkDate)
   }
 
+  async function saveInventoryCheckPhoto(file: File) {
+    if (!photoItem) return
+    const dataUrl = await readManagerReportFile(file)
+    const updated = await api.updateInventoryCheckItemStatus(photoItem.id, 'produzir', checkDate, {
+      file_name: file.name,
+      mime_type: file.type,
+      size_bytes: file.size,
+      data_url: dataUrl,
+    })
+    setItems((current) => current.map((entry) => entry.id === photoItem.id ? { ...entry, ...updated } : entry))
+    setPhotoItem(null)
+  }
+
   async function changeItemStatus(item: InventoryCheckItem, status: InventoryCheckStatus) {
     const previous = items
     setItems((current) => current.map((entry) => (entry.id === item.id ? { ...entry, status } : entry)))
     try {
-      await api.updateInventoryCheckItemStatus(item.id, status, checkDate)
+      const updated = await api.updateInventoryCheckItemStatus(item.id, status, checkDate)
+      setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, ...updated } : entry))
+      if (isCollaborator && status === 'produzir') {
+        setPhotoItem({ ...item, ...updated, status })
+      }
     } catch (err) {
       setItems(previous)
       setError(err instanceof Error ? err.message : 'Erro ao marcar conferência.')
@@ -2856,6 +3020,13 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
 
   return (
     <Shell session={session} onLogout={onLogout} title="Conferência" subtitle={isCollaborator ? 'Conferência do setor Smart.' : 'Checklist dos produtos que temos na casa e do que precisa pedir ou produzir.'}>
+      {photoItem && (
+        <InventoryCheckPhotoCapture
+          itemName={photoItem.name}
+          onCapture={saveInventoryCheckPhoto}
+          onCancel={() => setPhotoItem(null)}
+        />
+      )}
       <section className="panel inventory-report inventory-report-summary">
         <div className="panel-title-row inventory-report-title">
           <h2>Relatório do dia</h2>
@@ -2987,6 +3158,12 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
                     <article className="inventory-item-card" key={item.id}>
                       <div className="inventory-item-main">
                         <strong>{item.name}</strong>
+                        {item.photo_data_url && (
+                          <a className="inventory-check-photo-link" href={item.photo_data_url} download={item.photo_name || `conferencia-${item.id}.jpg`}>
+                            <img src={item.photo_data_url} alt={`Foto registrada de ${item.name}`} loading="lazy" />
+                            <span>Foto registrada</span>
+                          </a>
+                        )}
                       </div>
                       <div className="inventory-status-options" aria-label={`Status de ${item.name}`}>
                         {(['ok', 'pedir', 'produzir'] as InventoryCheckStatus[]).map((status) => (
@@ -2995,6 +3172,9 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
                               type="radio"
                               name={`inventory-${checkDate}-${item.id}`}
                               checked={item.status === status}
+                              onClick={() => {
+                                if (isCollaborator && status === 'produzir' && item.status === status) setPhotoItem(item)
+                              }}
                               onChange={() => changeItemStatus(item, status)}
                             />
                             {inventoryStatusLabel(status, item.sector_name)}

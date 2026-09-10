@@ -53,7 +53,7 @@ type Db = {
 let db: Db | null = null
 let ready: Promise<void> | null = null
 
-const SCHEMA_VERSION = '2026-09-08-smart-conference-v1'
+const SCHEMA_VERSION = '2026-09-10-inventory-check-photos-v1'
 
 const json = (statusCode: number, body: unknown) => ({
   statusCode,
@@ -227,6 +227,11 @@ async function migrate() {
         record_date text not null,
         status text not null check(status in ('ok', 'pedir', 'produzir')),
         checked_by integer references users(id),
+        photo_data_url text,
+        photo_mime_type text,
+        photo_name text,
+        photo_taken_by integer references users(id),
+        photo_taken_at text,
         created_at text not null default current_timestamp,
         updated_at text not null default current_timestamp,
         unique(item_id, record_date)
@@ -290,6 +295,11 @@ async function migrate() {
   await ensureColumn('products', 'category_name', 'alter table products add column category_name text')
   await ensureColumn('stock_orders', 'requested_date', 'alter table stock_orders add column requested_date text')
   await ensureColumn('inventory_check_items', 'sector_id', 'alter table inventory_check_items add column sector_id integer')
+  await ensureColumn('inventory_check_records', 'photo_data_url', 'alter table inventory_check_records add column photo_data_url text')
+  await ensureColumn('inventory_check_records', 'photo_mime_type', 'alter table inventory_check_records add column photo_mime_type text')
+  await ensureColumn('inventory_check_records', 'photo_name', 'alter table inventory_check_records add column photo_name text')
+  await ensureColumn('inventory_check_records', 'photo_taken_by', 'alter table inventory_check_records add column photo_taken_by integer references users(id)')
+  await ensureColumn('inventory_check_records', 'photo_taken_at', 'alter table inventory_check_records add column photo_taken_at text')
   await seedStockCategories()
   await backfillStockCategoriesFromProducts()
   await seedBreakfastMenus()
@@ -697,7 +707,9 @@ async function getInventoryCheckSectors(user?: AuthUser) {
 async function getInventoryCheckItems(date: string, user?: AuthUser) {
   const smartOnly = user?.role === 'colaborador' ? " and lower(trim(coalesce(s.name, ''))) = 'smart'" : ''
   const result = await getDb().execute({
-    sql: `select i.id, i.name, i.sector_id, s.name as sector_name, r.status, r.record_date as checked_date, i.active, i.created_at, coalesce(r.updated_at, i.updated_at) as updated_at
+    sql: `select i.id, i.name, i.sector_id, s.name as sector_name, r.status, r.record_date as checked_date,
+        r.photo_data_url, r.photo_mime_type, r.photo_name, r.photo_taken_by, r.photo_taken_at,
+        i.active, i.created_at, coalesce(r.updated_at, i.updated_at) as updated_at
       from inventory_check_items i
       left join inventory_check_sectors s on s.id = i.sector_id and s.active = 1
       left join inventory_check_records r on r.item_id = i.id and r.record_date = ?
@@ -707,6 +719,17 @@ async function getInventoryCheckItems(date: string, user?: AuthUser) {
   })
   return result.rows
 }
+
+const inventoryCheckPhotoSchema = z.object({
+  file_name: z.string().trim().min(1).max(160),
+  mime_type: z.string().trim().regex(/^image\//).max(100),
+  size_bytes: z.number().int().positive().max(2_500_000),
+  data_url: z.string().max(3_500_000),
+}).superRefine((photo, context) => {
+  if (!photo.data_url.startsWith(`data:${photo.mime_type};base64,`)) {
+    context.addIssue({ code: 'custom', path: ['data_url'], message: 'Conteúdo da foto inválido.' })
+  }
+})
 
 type StockOrder = DbRow & { id?: unknown; items: unknown[] }
 
@@ -1306,7 +1329,7 @@ export async function handler(event: Event) {
       if (event.httpMethod === 'POST') {
         const body = parseBody(event, z.object({ name: z.string().min(2), sector_id: z.number().int().positive().nullable().optional() }))
         const result = await getDb().execute({
-          sql: 'insert into inventory_check_items (name, sector_id, updated_at) values (?, ?, ?) returning id, name, sector_id, null as sector_name, null as status, null as checked_date, active, created_at, updated_at',
+          sql: 'insert into inventory_check_items (name, sector_id, updated_at) values (?, ?, ?) returning id, name, sector_id, null as sector_name, null as status, null as checked_date, null as photo_data_url, null as photo_mime_type, null as photo_name, null as photo_taken_by, null as photo_taken_at, active, created_at, updated_at',
           args: [body.name.trim(), body.sector_id ?? null, brazilNowIso()],
         })
         return json(201, result.rows[0])
@@ -1318,7 +1341,7 @@ export async function handler(event: Event) {
       await requireUser(event, 'gestor')
       const body = parseBody(event, z.object({ name: z.string().min(2), sector_id: z.number().int().positive().nullable().optional(), active: z.coerce.boolean() }))
       const result = await getDb().execute({
-        sql: 'update inventory_check_items set name = ?, sector_id = ?, active = ?, updated_at = ? where id = ? returning id, name, sector_id, null as sector_name, null as status, null as checked_date, active, created_at, updated_at',
+        sql: 'update inventory_check_items set name = ?, sector_id = ?, active = ?, updated_at = ? where id = ? returning id, name, sector_id, null as sector_name, null as status, null as checked_date, null as photo_data_url, null as photo_mime_type, null as photo_name, null as photo_taken_by, null as photo_taken_at, active, created_at, updated_at',
         args: [body.name.trim(), body.sector_id ?? null, body.active ? 1 : 0, brazilNowIso(), Number(inventoryCheckItemMatch[1])],
       })
       const row = result.rows[0]
@@ -1343,8 +1366,12 @@ export async function handler(event: Event) {
         z.object({
           status: z.enum(['ok', 'pedir', 'produzir']),
           date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          photo: inventoryCheckPhotoSchema.optional(),
         }),
       )
+      if (body.photo && body.status !== 'produzir') {
+        return json(400, { error: 'A foto só pode ser registrada em Faltou fazer.' })
+      }
       const itemId = Number(inventoryCheckStatusMatch[1])
       const exists = await getDb().execute({
         sql: `select i.id
@@ -1355,10 +1382,30 @@ export async function handler(event: Event) {
       })
       if (exists.rows.length === 0) return json(404, { error: 'Item de conferência não encontrado.' })
       await getDb().execute({
-        sql: `insert into inventory_check_records (item_id, record_date, status, checked_by, updated_at)
-          values (?, ?, ?, ?, ?)
-          on conflict(item_id, record_date) do update set status = excluded.status, checked_by = excluded.checked_by, updated_at = excluded.updated_at`,
-        args: [itemId, body.date, body.status, actor.id, brazilNowIso()],
+        sql: `insert into inventory_check_records
+            (item_id, record_date, status, checked_by, photo_data_url, photo_mime_type, photo_name, photo_taken_by, photo_taken_at, updated_at)
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          on conflict(item_id, record_date) do update set
+            status = excluded.status,
+            checked_by = excluded.checked_by,
+            photo_data_url = case when excluded.status = 'produzir' then coalesce(excluded.photo_data_url, inventory_check_records.photo_data_url) else null end,
+            photo_mime_type = case when excluded.status = 'produzir' then coalesce(excluded.photo_mime_type, inventory_check_records.photo_mime_type) else null end,
+            photo_name = case when excluded.status = 'produzir' then coalesce(excluded.photo_name, inventory_check_records.photo_name) else null end,
+            photo_taken_by = case when excluded.status = 'produzir' then coalesce(excluded.photo_taken_by, inventory_check_records.photo_taken_by) else null end,
+            photo_taken_at = case when excluded.status = 'produzir' then coalesce(excluded.photo_taken_at, inventory_check_records.photo_taken_at) else null end,
+            updated_at = excluded.updated_at`,
+        args: [
+          itemId,
+          body.date,
+          body.status,
+          actor.id,
+          body.photo?.data_url ?? null,
+          body.photo?.mime_type ?? null,
+          body.photo?.file_name ?? null,
+          body.photo ? actor.id : null,
+          body.photo ? brazilNowIso() : null,
+          brazilNowIso(),
+        ],
       })
       const rows = await getInventoryCheckItems(body.date, actor)
       return json(200, rows.find((row) => Number(row.id) === itemId))

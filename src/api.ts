@@ -217,10 +217,15 @@ export const api = {
     request<{ ok: boolean }>(`/api/inventory-check-items/${id}`, {
       method: 'DELETE',
     }),
-  updateInventoryCheckItemStatus: (id: number, status: InventoryCheckStatus, date: string) =>
+  updateInventoryCheckItemStatus: (
+    id: number,
+    status: InventoryCheckStatus,
+    date: string,
+    photo?: { file_name: string; mime_type: string; size_bytes: number; data_url: string },
+  ) =>
     request<InventoryCheckItem>(`/api/inventory-check-items/${id}/status`, {
       method: 'PUT',
-      body: JSON.stringify({ status, date }),
+      body: JSON.stringify({ status, date, ...(photo ? { photo } : {}) }),
     }),
   stockOrders: (date?: string) => request<StockOrder[]>(`/api/stock-orders${date ? `?date=${date}` : ''}`),
   createStockOrder: (payload: { date: string; notes?: string; items: Array<{ product_id: number; quantity: string }> }) =>

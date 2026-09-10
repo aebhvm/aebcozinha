@@ -52,6 +52,11 @@ export type InventoryCheckItem = {
   sector_name: string | null
   status: InventoryCheckStatus | null
   checked_date: string | null
+  photo_data_url: string | null
+  photo_mime_type: string | null
+  photo_name: string | null
+  photo_taken_by: number | null
+  photo_taken_at: string | null
   active: boolean
   created_at: string
   updated_at: string
