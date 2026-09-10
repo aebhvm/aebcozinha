@@ -826,6 +826,21 @@ const managerReportAttachmentSchema = z.object({
   }
 })
 
+const managerReportCreateSchema = z.object({
+  title: z.string().trim().max(160).default(''),
+  body: z.string().trim().max(10_000).default(''),
+  attachments: z.array(managerReportAttachmentSchema).max(6).default([]),
+}).superRefine((report, context) => {
+  if (report.attachments.length > 0) return
+  if (report.title.length < 2 || report.body.length === 0) {
+    context.addIssue({
+      code: 'custom',
+      path: ['title'],
+      message: 'Preencha o título e o texto ou envie pelo menos um anexo.',
+    })
+  }
+})
+
 async function getTasks(date: string, user: AuthUser) {
   const restriction = user.role === 'colaborador' ? 'and t.user_id = ?' : ''
   const args = user.role === 'colaborador' ? [date, user.id] : [date]
@@ -1538,24 +1553,18 @@ export async function handler(event: Event) {
         return json(200, await getManagerReports(user, startDate, endDate))
       }
       if (event.httpMethod === 'POST') {
-        const body = parseBody(
-          event,
-          z.object({
-            title: z.string().trim().min(2).max(160),
-            body: z.string().trim().min(1).max(10_000),
-            attachments: z.array(managerReportAttachmentSchema).max(6).default([]),
-          }),
-        )
+        const body = parseBody(event, managerReportCreateSchema)
         const totalBytes = body.attachments.reduce((total, attachment) => total + attachment.size_bytes, 0)
         if (totalBytes > 2_500_000) {
           return json(400, { error: 'Os anexos devem somar no máximo 2,5 MB.' })
         }
         const createdAt = brazilNowIso()
+        const reportTitle = body.title || (body.attachments.length > 0 ? 'Relatório com anexo' : body.title)
         const result = await getDb().execute({
           sql: `insert into manager_reports (title, body, created_by, created_at)
             values (?, ?, ?, ?)
             returning id`,
-          args: [body.title, body.body, user.id, createdAt],
+          args: [reportTitle, body.body, user.id, createdAt],
         })
         const reportId = Number(result.rows[0]?.id)
         if (body.attachments.length > 0) {

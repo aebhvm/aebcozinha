@@ -1613,6 +1613,11 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (saving) return
+    const hasWrittenReport = title.trim().length >= 2 && body.trim().length > 0
+    if (attachments.length === 0 && !hasWrittenReport) {
+      setError('Preencha o título e o texto ou envie pelo menos uma foto, áudio ou vídeo.')
+      return
+    }
     setSaving(true)
     setError('')
     setSuccess('')
@@ -1640,6 +1645,8 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
       setSaving(false)
     }
   }
+
+  const canSubmit = attachments.length > 0 || (title.trim().length >= 2 && body.trim().length > 0)
 
   async function verify(report: ManagerReport) {
     setError('')
@@ -1680,17 +1687,17 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
         <div className="panel-title-row">
           <div>
             <h2>Novo relatório</h2>
-            <p className="hint">Registre a ocorrência por escrito e, se necessário, anexe fotos, áudios ou vídeos curtos.</p>
+            <p className="hint">Preencha o texto ou envie fotos, áudios ou vídeos curtos. Com anexo, título e texto são opcionais.</p>
           </div>
         </div>
         <form className="stack" onSubmit={submit}>
           <label>
             Título
-            <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} placeholder="Ex.: Ocorrência no turno da noite" required />
+            <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} placeholder="Ex.: Ocorrência no turno da noite" required={attachments.length === 0} />
           </label>
           <label>
             Relatório escrito
-            <textarea value={body} onChange={(event) => setBody(event.target.value)} maxLength={10000} rows={5} placeholder="Descreva o ocorrido, o local e as providências tomadas..." required />
+            <textarea value={body} onChange={(event) => setBody(event.target.value)} maxLength={10000} rows={5} placeholder="Descreva o ocorrido, o local e as providências tomadas..." required={attachments.length === 0} />
           </label>
           <label className="manager-report-file-picker">
             <Paperclip size={19} />
@@ -1716,7 +1723,7 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
           )}
           {error && <p className="error">{error}</p>}
           {success && <p className="success">{success}</p>}
-          <button className="primary manager-report-submit" disabled={saving || !title.trim() || !body.trim()}>
+          <button className="primary manager-report-submit" disabled={saving || !canSubmit}>
             <Send size={18} /> {saving ? 'Enviando...' : 'Enviar relatório'}
           </button>
         </form>
@@ -1771,7 +1778,7 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
                       </button>
                     )}
                   </div>
-                  <p className="manager-report-body">{report.body}</p>
+                  {report.body.trim() && <p className="manager-report-body">{report.body}</p>}
                   {report.attachments.length > 0 && (
                     <div className="manager-report-media-grid">
                       {report.attachments.map((attachment) => <ManagerReportMedia key={attachment.id} attachment={attachment} />)}
