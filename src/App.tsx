@@ -1190,17 +1190,58 @@ function formatAttachmentSize(size: number) {
     : `${Math.max(1, Math.round(size / 1024))} KB`
 }
 
+function useMediaSource(dataUrl: string, mimeType: string) {
+  const [source, setSource] = useState(dataUrl)
+
+  useEffect(() => {
+    let disposed = false
+    let objectUrl = ''
+    setSource(dataUrl)
+
+    if (!dataUrl.startsWith('data:')) return () => undefined
+
+    void fetch(dataUrl)
+      .then((response) => response.blob())
+      .then((blob) => {
+        if (disposed) return
+        objectUrl = URL.createObjectURL(blob.type ? blob : new Blob([blob], { type: mimeType }))
+        setSource(objectUrl)
+      })
+      .catch(() => undefined)
+
+    return () => {
+      disposed = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [dataUrl, mimeType])
+
+  return source
+}
+
 function ManagerReportMedia({ attachment }: { attachment: ManagerReportAttachment }) {
+  const mediaSource = useMediaSource(attachment.data_url, attachment.mime_type)
+  const [playbackError, setPlaybackError] = useState(false)
+
+  useEffect(() => {
+    setPlaybackError(false)
+  }, [mediaSource])
+
   return (
     <div className="manager-report-media-item">
       {attachment.attachment_type === 'imagem' && (
-        <img src={attachment.data_url} alt={attachment.file_name} loading="lazy" />
+        <img src={mediaSource} alt={attachment.file_name} loading="lazy" />
       )}
       {attachment.attachment_type === 'audio' && (
-        <audio controls preload="metadata" src={attachment.data_url}>Seu navegador não suporta áudio.</audio>
+        <audio controls preload="metadata" src={mediaSource}>Seu navegador não suporta áudio.</audio>
       )}
       {attachment.attachment_type === 'video' && (
-        <video controls preload="metadata" playsInline src={attachment.data_url}>Seu navegador não suporta vídeo.</video>
+        <video key={mediaSource} controls preload="auto" playsInline onError={() => setPlaybackError(true)}>
+          <source src={mediaSource} type={attachment.mime_type} />
+          Seu navegador não suporta vídeo.
+        </video>
+      )}
+      {playbackError && attachment.attachment_type === 'video' && (
+        <p className="manager-report-media-error">Este navegador não conseguiu reproduzir este vídeo. Use o botão abaixo para baixar o arquivo.</p>
       )}
       <a href={attachment.data_url} download={attachment.file_name} className="manager-report-media-caption">
         {attachment.attachment_type === 'imagem' ? <ImageIcon size={15} /> : attachment.attachment_type === 'audio' ? <Mic size={15} /> : <Video size={15} />}
@@ -1217,7 +1258,7 @@ type ManagerReportCameraMode = 'foto' | 'video'
 function supportedRecorderMime(kind: 'audio' | 'video') {
   const candidates = kind === 'audio'
     ? ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm']
-    : ['video/webm;codecs=vp8,opus', 'video/mp4', 'video/webm']
+    : ['video/mp4', 'video/webm;codecs=vp8,opus', 'video/webm']
   return candidates.find((mime) => MediaRecorder.isTypeSupported(mime)) ?? ''
 }
 
