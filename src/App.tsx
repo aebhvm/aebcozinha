@@ -41,6 +41,7 @@ import {
   useNavigate,
   useParams,
 } from 'react-router-dom'
+import { webmFixDuration } from 'webm-fix-duration'
 import { api, clearSession, getSession, saveSession } from './api'
 import { currentMenuDay, menuDays, type MenuDay } from './menuData'
 import './App.css'
@@ -1192,10 +1193,12 @@ function canPreviewVideo(file: Blob) {
     const finish = (result: boolean) => {
       if (settled) return
       settled = true
+      window.clearTimeout(timeout)
       URL.revokeObjectURL(source)
       video.remove()
       resolve(result)
     }
+    const timeout = window.setTimeout(() => finish(false), 5000)
     video.preload = 'metadata'
     video.onloadedmetadata = () => finish(Number.isFinite(video.duration) && video.duration > 0)
     video.onerror = () => finish(false)
@@ -1328,6 +1331,7 @@ function ManagerReportCapture({
   const recorderRef = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<Blob[]>([])
+  const recordingStartedAtRef = useRef(0)
   const discardRecordingRef = useRef(false)
   const recordingKindRef = useRef<'audio' | 'video'>('audio')
 
@@ -1481,6 +1485,7 @@ function ManagerReportCapture({
       const recordedMime = chunksRef.current.find((chunk) => chunk.type)?.type
         || recorder.mimeType
         || (kind === 'audio' ? 'audio/webm' : 'video/webm')
+      const recordedDuration = Math.max(1, Date.now() - recordingStartedAtRef.current)
       const blob = new Blob(chunksRef.current, { type: recordedMime })
       setRecording(false)
       setRequestingPermission(false)
@@ -1488,15 +1493,27 @@ function ManagerReportCapture({
       recorderRef.current = null
       chunksRef.current = []
       if (!shouldDiscard && blob.size > 0) {
-        if (kind === 'video' && !(await canPreviewVideo(blob))) {
+        try {
+          const finalizedBlob = kind === 'video' && recordedMime.toLowerCase().includes('webm')
+            ? await webmFixDuration(blob, recordedDuration, 'video/webm')
+            : blob
+          if (kind === 'video' && !(await canPreviewVideo(finalizedBlob))) {
+            stopStream()
+            setCaptureMode('camera')
+            setCameraMode('video')
+            setCaptureError('O navegador não conseguiu finalizar o vídeo. Grave novamente.')
+            return
+          }
+          const finalizedMime = finalizedBlob.type || recordedMime
+          const file = new File([finalizedBlob], `${kind === 'audio' ? 'audio' : 'video'}-${Date.now()}.${recordingExtension(finalizedMime, kind)}`, { type: finalizedMime })
+          await onCapture(file)
+          closeCapture()
+        } catch {
           stopStream()
           setCaptureMode('camera')
           setCameraMode('video')
-          setCaptureError('O navegador gerou um vídeo inválido. Use “Vídeo do aparelho” para registrar uma gravação compatível.')
-          return
+          setCaptureError('Não foi possível finalizar o vídeo. Grave novamente.')
         }
-        const file = new File([blob], `${kind === 'audio' ? 'audio' : 'video'}-${Date.now()}.${recordingExtension(recordedMime, kind)}`, { type: recordedMime })
-        void onCapture(file).then(closeCapture)
       } else if (!shouldDiscard) {
         stopStream()
         setCaptureMode(null)
@@ -1508,10 +1525,11 @@ function ManagerReportCapture({
       closeCapture()
     }
     recorder.onstart = () => {
+      recordingStartedAtRef.current = Date.now()
       setRequestingPermission(false)
       setRecording(true)
     }
-    recorder.start(1000)
+    recorder.start()
     setRecordingSeconds(0)
     if (recorder.state === 'recording') {
       setRequestingPermission(false)

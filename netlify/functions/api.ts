@@ -720,6 +720,14 @@ async function getInventoryCheckItems(date: string, user?: AuthUser) {
   return result.rows
 }
 
+function dataUrlDecodedSize(dataUrl: string) {
+  const commaIndex = dataUrl.indexOf(',')
+  if (commaIndex < 0) return -1
+  const payload = dataUrl.slice(commaIndex + 1)
+  const padding = payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0
+  return Math.floor((payload.length * 3) / 4) - padding
+}
+
 const inventoryCheckPhotoSchema = z.object({
   file_name: z.string().trim().min(1).max(160),
   mime_type: z.string().trim().regex(/^(image|video)\//).max(100),
@@ -728,6 +736,8 @@ const inventoryCheckPhotoSchema = z.object({
 }).superRefine((photo, context) => {
   if (!photo.data_url.startsWith(`data:${photo.mime_type};base64,`)) {
     context.addIssue({ code: 'custom', path: ['data_url'], message: 'Conteúdo da foto inválido.' })
+  } else if (dataUrlDecodedSize(photo.data_url) !== photo.size_bytes) {
+    context.addIssue({ code: 'custom', path: ['data_url'], message: 'O arquivo de mídia chegou incompleto.' })
   }
 })
 
@@ -846,6 +856,8 @@ const managerReportAttachmentSchema = z.object({
   }
   if (!attachment.data_url.startsWith(`data:${attachment.mime_type};base64,`)) {
     context.addIssue({ code: 'custom', path: ['data_url'], message: 'Conteúdo do anexo inválido.' })
+  } else if (dataUrlDecodedSize(attachment.data_url) !== attachment.size_bytes) {
+    context.addIssue({ code: 'custom', path: ['data_url'], message: 'O arquivo de mídia chegou incompleto.' })
   }
 })
 
