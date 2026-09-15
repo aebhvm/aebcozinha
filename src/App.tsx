@@ -1316,7 +1316,7 @@ function ManagerReportCapture({
   onCapture: (file: File) => Promise<void>
 }) {
   const [captureMode, setCaptureMode] = useState<ManagerReportCaptureMode>(null)
-  const [cameraMode, setCameraMode] = useState<ManagerReportCameraMode>('foto')
+  const [cameraMode, setCameraMode] = useState<ManagerReportCameraMode>('video')
   const [stream, setStream] = useState<MediaStream | null>(null)
   const [recording, setRecording] = useState(false)
   const [requestingPermission, setRequestingPermission] = useState(false)
@@ -1411,14 +1411,19 @@ function ManagerReportCapture({
     })
     replaceStream(nextStream)
     setCameraMode(mode)
+    return nextStream
   }
 
   async function openCamera() {
     setCaptureError('')
     try {
-      if (!navigator.mediaDevices?.getUserMedia) throw new Error('unsupported')
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+        nativeCameraInputRef.current?.click()
+        return
+      }
       setCaptureMode('camera')
-      await createStream('foto')
+      const nextStream = await createStream('video')
+      startRecorder(nextStream, 'video')
     } catch (err) {
       closeCapture()
       setCaptureError(permissionMessage(err))
@@ -1573,7 +1578,7 @@ function ManagerReportCapture({
           <Mic size={18} /> Gravar áudio
         </button>
         <button type="button" className="secondary" onClick={openCameraOrFallback} disabled={disabled || captureMode !== null}>
-          <Camera size={18} /> Abrir câmera
+          <Camera size={18} /> Abrir câmera e gravar
         </button>
       </div>
 
@@ -1607,7 +1612,7 @@ function ManagerReportCapture({
             ) : (
               <button type="button" className="primary" onClick={startVideoRecording}><Video size={18} /> Gravar vídeo</button>
             )}
-            {cameraMode === 'video' && !recording && (
+            {cameraMode === 'video' && !recording && captureError.includes('vídeo inválido') && (
               <button type="button" className="secondary" onClick={() => nativeCameraInputRef.current?.click()}><Video size={18} /> Vídeo do aparelho</button>
             )}
             <button type="button" className="secondary" onClick={() => recording ? finishRecording(false) : closeCapture()}>Cancelar</button>
