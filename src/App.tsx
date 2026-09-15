@@ -1868,9 +1868,9 @@ function InventoryCheckPhotoCapture({
     }
   }, [])
 
-  async function savePhoto(file: File) {
-    if (!file.type.startsWith('image/')) {
-      setError('Escolha uma imagem válida.')
+  async function saveMedia(file: File) {
+    if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
+      setError('Escolha uma foto ou vídeo válido.')
       return
     }
     if (file.size > 2_500_000) {
@@ -1902,13 +1902,13 @@ function InventoryCheckPhotoCapture({
       setError('Não foi possível capturar a foto.')
       return
     }
-    await savePhoto(new File([blob], `conferencia-${Date.now()}.jpg`, { type: 'image/jpeg' }))
+    await saveMedia(new File([blob], `conferencia-${Date.now()}.jpg`, { type: 'image/jpeg' }))
   }
 
-  async function choosePhoto(event: ChangeEvent<HTMLInputElement>) {
+  async function chooseMedia(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     event.target.value = ''
-    if (file) await savePhoto(file)
+    if (file) await saveMedia(file)
   }
 
   function cancel() {
@@ -1921,7 +1921,7 @@ function InventoryCheckPhotoCapture({
       <div className="inventory-photo-capture" role="dialog" aria-modal="true" aria-label={`Registrar foto de ${itemName}`}>
         <div className="inventory-photo-capture-head">
           <div>
-            <strong>Registrar foto</strong>
+          <strong>Registrar foto ou vídeo</strong>
             <span>{itemName}</span>
           </div>
           <button type="button" className="secondary icon-button" onClick={cancel} aria-label="Fechar câmera" title="Fechar câmera"><X size={17} /></button>
@@ -1941,10 +1941,10 @@ function InventoryCheckPhotoCapture({
           ) : (
             <button type="button" className="secondary" onClick={() => void openCamera()} disabled={saving}><Camera size={18} /> Tentar abrir câmera</button>
           )}
-          <button type="button" className="secondary" onClick={() => inputRef.current?.click()} disabled={saving}>Escolher foto</button>
+          <button type="button" className="secondary" onClick={() => inputRef.current?.click()} disabled={saving}>Escolher foto ou vídeo</button>
           <button type="button" className="secondary" onClick={cancel} disabled={saving}>Cancelar</button>
         </div>
-        <input ref={inputRef} className="manager-report-native-capture" type="file" accept="image/*" capture="environment" onChange={(event) => void choosePhoto(event)} aria-label="Escolher foto da conferência" />
+        <input ref={inputRef} className="manager-report-native-capture" type="file" accept="image/*,video/*" capture="environment" onChange={(event) => void chooseMedia(event)} aria-label="Escolher foto ou vídeo da conferência" />
       </div>
     </div>
   )
@@ -3169,10 +3169,16 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
                       <div className="inventory-item-main">
                         <strong>{item.name}</strong>
                         {item.photo_data_url && (
-                          <a className="inventory-check-photo-link" href={item.photo_data_url} download={item.photo_name || `conferencia-${item.id}.jpg`}>
-                            <img src={item.photo_data_url} alt={`Foto registrada de ${item.name}`} loading="lazy" />
-                            <span>Foto registrada</span>
-                          </a>
+                          <div className="inventory-check-media">
+                            {item.photo_mime_type?.startsWith('video/') ? (
+                              <video controls preload="metadata" playsInline src={item.photo_data_url}>Seu navegador não suporta este vídeo.</video>
+                            ) : (
+                              <img src={item.photo_data_url} alt={`Foto registrada de ${item.name}`} loading="lazy" />
+                            )}
+                            <a className="inventory-check-photo-link" href={item.photo_data_url} download={item.photo_name || `conferencia-${item.id}.${item.photo_mime_type?.startsWith('video/') ? 'mp4' : 'jpg'}`}>
+                              <span>{item.photo_mime_type?.startsWith('video/') ? 'Vídeo registrado' : 'Foto registrada'}</span>
+                            </a>
+                          </div>
                         )}
                       </div>
                       <div className="inventory-status-options" aria-label={`Status de ${item.name}`}>

@@ -919,12 +919,25 @@ button:disabled {
   text-decoration: none;
 }
 
-.inventory-check-photo-link img {
+.inventory-check-media {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+}
+
+.inventory-check-media img,
+.inventory-check-media video {
   width: 54px;
   height: 40px;
   border: 1px solid var(--border);
   border-radius: 5px;
   object-fit: cover;
+}
+
+.inventory-check-media video {
+  background: #17231c;
+  width: min(100%, 240px);
+  height: 135px;
 }
 
 .manager-report-recorder {

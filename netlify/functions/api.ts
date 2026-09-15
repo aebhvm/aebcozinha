@@ -722,7 +722,7 @@ async function getInventoryCheckItems(date: string, user?: AuthUser) {
 
 const inventoryCheckPhotoSchema = z.object({
   file_name: z.string().trim().min(1).max(160),
-  mime_type: z.string().trim().regex(/^image\//).max(100),
+  mime_type: z.string().trim().regex(/^(image|video)\//).max(100),
   size_bytes: z.number().int().positive().max(2_500_000),
   data_url: z.string().max(3_500_000),
 }).superRefine((photo, context) => {
@@ -1370,7 +1370,7 @@ export async function handler(event: Event) {
         }),
       )
       if (body.photo && body.status !== 'produzir') {
-        return json(400, { error: 'A foto só pode ser registrada em Faltou fazer.' })
+        return json(400, { error: 'A foto ou vídeo só pode ser registrado em Faltou fazer.' })
       }
       const itemId = Number(inventoryCheckStatusMatch[1])
       const exists = await getDb().execute({
