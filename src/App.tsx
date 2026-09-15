@@ -1184,6 +1184,26 @@ function readManagerReportFile(file: File) {
   })
 }
 
+function canPreviewVideo(file: Blob) {
+  return new Promise<boolean>((resolve) => {
+    const source = URL.createObjectURL(file)
+    const video = document.createElement('video')
+    let settled = false
+    const finish = (result: boolean) => {
+      if (settled) return
+      settled = true
+      URL.revokeObjectURL(source)
+      video.remove()
+      resolve(result)
+    }
+    video.preload = 'metadata'
+    video.onloadedmetadata = () => finish(Number.isFinite(video.duration) && video.duration > 0)
+    video.onerror = () => finish(false)
+    video.src = source
+    video.load()
+  })
+}
+
 function formatAttachmentSize(size: number) {
   return size >= 1024 * 1024
     ? `${(size / 1024 / 1024).toFixed(1)} MB`
@@ -1235,8 +1255,7 @@ function ManagerReportMedia({ attachment }: { attachment: ManagerReportAttachmen
         <audio controls preload="metadata" src={mediaSource}>Seu navegador não suporta áudio.</audio>
       )}
       {attachment.attachment_type === 'video' && (
-        <video key={mediaSource} controls preload="auto" playsInline onError={() => setPlaybackError(true)}>
-          <source src={mediaSource} type={attachment.mime_type} />
+        <video key={mediaSource} controls preload="auto" playsInline src={mediaSource} onError={() => setPlaybackError(true)}>
           Seu navegador não suporta vídeo.
         </video>
       )}
@@ -1261,8 +1280,7 @@ function InventoryCheckMedia({ item }: { item: InventoryCheckItem }) {
   return (
     <div className="inventory-check-media">
       {isVideo ? (
-        <video key={mediaSource} controls preload="auto" playsInline>
-          <source src={mediaSource} type={item.photo_mime_type} />
+        <video key={mediaSource} controls preload="auto" playsInline src={mediaSource}>
           Seu navegador não suporta este vídeo.
         </video>
       ) : (
@@ -1453,7 +1471,7 @@ function ManagerReportCapture({
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunksRef.current.push(event.data)
     }
-    recorder.onstop = () => {
+    recorder.onstop = async () => {
       const shouldDiscard = discardRecordingRef.current
       const recordedMime = chunksRef.current.find((chunk) => chunk.type)?.type
         || recorder.mimeType
@@ -1465,6 +1483,13 @@ function ManagerReportCapture({
       recorderRef.current = null
       chunksRef.current = []
       if (!shouldDiscard && blob.size > 0) {
+        if (kind === 'video' && !(await canPreviewVideo(blob))) {
+          stopStream()
+          setCaptureMode('camera')
+          setCameraMode('video')
+          setCaptureError('O navegador gerou um vídeo inválido. Use “Vídeo do aparelho” para registrar uma gravação compatível.')
+          return
+        }
         const file = new File([blob], `${kind === 'audio' ? 'audio' : 'video'}-${Date.now()}.${recordingExtension(recordedMime, kind)}`, { type: recordedMime })
         void onCapture(file).then(closeCapture)
       } else if (!shouldDiscard) {
@@ -1582,6 +1607,9 @@ function ManagerReportCapture({
             ) : (
               <button type="button" className="primary" onClick={startVideoRecording}><Video size={18} /> Gravar vídeo</button>
             )}
+            {cameraMode === 'video' && !recording && (
+              <button type="button" className="secondary" onClick={() => nativeCameraInputRef.current?.click()}><Video size={18} /> Vídeo do aparelho</button>
+            )}
             <button type="button" className="secondary" onClick={() => recording ? finishRecording(false) : closeCapture()}>Cancelar</button>
           </div>
         </div>
@@ -1651,6 +1679,10 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
       if (totalBytes + file.size > managerReportMaxTotalBytes) {
         setError('Os anexos devem somar no máximo 2,5 MB. Use fotos compactadas e vídeos curtos.')
         break
+      }
+      if (attachmentType === 'video' && !(await canPreviewVideo(file))) {
+        setError(`O vídeo “${file.name}” não pôde ser lido neste aparelho. Escolha outro vídeo.`)
+        continue
       }
       try {
         next.push({
@@ -1941,6 +1973,10 @@ function InventoryCheckPhotoCapture({
     }
     if (file.size > 2_500_000) {
       setError('A foto deve ter no máximo 2,5 MB.')
+      return
+    }
+    if (file.type.startsWith('video/') && !(await canPreviewVideo(file))) {
+      setError('Este vídeo não pôde ser lido neste aparelho. Escolha outro vídeo.')
       return
     }
     setSaving(true)
