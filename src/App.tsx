@@ -1185,28 +1185,6 @@ function readManagerReportFile(file: File) {
   })
 }
 
-function canPreviewVideo(file: Blob) {
-  return new Promise<boolean>((resolve) => {
-    const source = URL.createObjectURL(file)
-    const video = document.createElement('video')
-    let settled = false
-    const finish = (result: boolean) => {
-      if (settled) return
-      settled = true
-      window.clearTimeout(timeout)
-      URL.revokeObjectURL(source)
-      video.remove()
-      resolve(result)
-    }
-    const timeout = window.setTimeout(() => finish(false), 5000)
-    video.preload = 'metadata'
-    video.onloadedmetadata = () => finish(Number.isFinite(video.duration) && video.duration > 0)
-    video.onerror = () => finish(false)
-    video.src = source
-    video.load()
-  })
-}
-
 function formatAttachmentSize(size: number) {
   return size >= 1024 * 1024
     ? `${(size / 1024 / 1024).toFixed(1)} MB`
@@ -1316,12 +1294,13 @@ function ManagerReportCapture({
   onCapture,
 }: {
   disabled: boolean
-  onCapture: (file: File) => Promise<void>
+  onCapture: (file: File) => Promise<boolean>
 }) {
   const [captureMode, setCaptureMode] = useState<ManagerReportCaptureMode>(null)
   const [cameraMode, setCameraMode] = useState<ManagerReportCameraMode>('video')
   const [stream, setStream] = useState<MediaStream | null>(null)
   const [recording, setRecording] = useState(false)
+  const [finalizingRecording, setFinalizingRecording] = useState(false)
   const [requestingPermission, setRequestingPermission] = useState(false)
   const [recordingSeconds, setRecordingSeconds] = useState(0)
   const [captureError, setCaptureError] = useState('')
@@ -1356,6 +1335,7 @@ function ManagerReportCapture({
     }
     recorderRef.current = null
     setRecording(false)
+    setFinalizingRecording(false)
     setRequestingPermission(false)
     setRecordingSeconds(0)
     stopStream()
@@ -1459,8 +1439,9 @@ function ManagerReportCapture({
       setCaptureError('Não foi possível capturar a foto.')
       return
     }
-    await onCapture(new File([blob], `foto-${Date.now()}.jpg`, { type: 'image/jpeg' }))
-    closeCapture()
+    const attached = await onCapture(new File([blob], `foto-${Date.now()}.jpg`, { type: 'image/jpeg' }))
+    if (attached) closeCapture()
+    else setCaptureError('A foto não foi anexada. Verifique o tamanho e tente novamente.')
   }
 
   function startRecorder(nextStream: MediaStream, kind: 'audio' | 'video') {
@@ -1493,28 +1474,29 @@ function ManagerReportCapture({
       recorderRef.current = null
       chunksRef.current = []
       if (!shouldDiscard && blob.size > 0) {
+        if (kind === 'video') setFinalizingRecording(true)
         try {
           const finalizedBlob = kind === 'video' && recordedMime.toLowerCase().includes('webm')
             ? await webmFixDuration(blob, recordedDuration, 'video/webm')
             : blob
-          if (kind === 'video' && !(await canPreviewVideo(finalizedBlob))) {
-            stopStream()
-            setCaptureMode('camera')
-            setCameraMode('video')
-            setCaptureError('O navegador não conseguiu finalizar o vídeo. Grave novamente.')
-            return
-          }
           const finalizedMime = finalizedBlob.type || recordedMime
           const file = new File([finalizedBlob], `${kind === 'audio' ? 'audio' : 'video'}-${Date.now()}.${recordingExtension(finalizedMime, kind)}`, { type: finalizedMime })
-          await onCapture(file)
-          closeCapture()
-        } catch {
+          const attached = await onCapture(file)
+          if (attached) {
+            closeCapture()
+          } else {
+            setCaptureError(`O ${kind === 'video' ? 'vídeo' : 'áudio'} não foi anexado. Verifique o tamanho e tente novamente.`)
+          }
+        } catch (err) {
           stopStream()
           setCaptureMode('camera')
           setCameraMode('video')
-          setCaptureError('Não foi possível finalizar o vídeo. Grave novamente.')
+          setCaptureError(err instanceof Error ? err.message : 'Não foi possível finalizar o vídeo. Grave novamente.')
+        } finally {
+          setFinalizingRecording(false)
         }
       } else if (!shouldDiscard) {
+        setFinalizingRecording(false)
         stopStream()
         setCaptureMode(null)
         setCaptureError('O navegador encerrou a gravação sem gerar áudio. Tente novamente ou use o gravador do aparelho.')
@@ -1569,6 +1551,7 @@ function ManagerReportCapture({
   function finishRecording(save: boolean) {
     if (!recorderRef.current || recorderRef.current.state !== 'recording') return
     discardRecordingRef.current = !save
+    if (save && recordingKindRef.current === 'video') setFinalizingRecording(true)
     recorderRef.current.stop()
     if (!save) closeCapture()
   }
@@ -1578,7 +1561,8 @@ function ManagerReportCapture({
     event.target.value = ''
     if (!file) return
     setCaptureError('')
-    await onCapture(file)
+    const attached = await onCapture(file)
+    if (!attached) setCaptureError('O arquivo não foi anexado. Verifique o tamanho e tente novamente.')
   }
 
   function openCameraOrFallback() {
@@ -1613,8 +1597,8 @@ function ManagerReportCapture({
       {captureMode === 'camera' && (
         <div className="manager-report-camera">
           <div className="manager-report-camera-tabs" role="group" aria-label="Modo da câmera">
-            <button type="button" className={cameraMode === 'foto' ? 'primary compact' : 'secondary compact'} onClick={() => void changeCameraMode('foto')} disabled={recording}>Foto</button>
-            <button type="button" className={cameraMode === 'video' ? 'primary compact' : 'secondary compact'} onClick={() => void changeCameraMode('video')} disabled={recording}>Vídeo</button>
+            <button type="button" className={cameraMode === 'foto' ? 'primary compact' : 'secondary compact'} onClick={() => void changeCameraMode('foto')} disabled={recording || finalizingRecording}>Foto</button>
+            <button type="button" className={cameraMode === 'video' ? 'primary compact' : 'secondary compact'} onClick={() => void changeCameraMode('video')} disabled={recording || finalizingRecording}>Vídeo</button>
           </div>
           <video ref={videoRef} muted playsInline autoPlay aria-label="Pré-visualização da câmera" />
           {recording && (
@@ -1622,18 +1606,22 @@ function ManagerReportCapture({
               <span className="recording-dot" /> Gravando {recordingSeconds}s / 15s
             </div>
           )}
+          {finalizingRecording && (
+            <div className="manager-report-recording-status" role="status" aria-live="polite">
+              Processando vídeo para enviar...
+            </div>
+          )}
           <div className="manager-report-camera-actions">
-            {cameraMode === 'foto' ? (
+            {finalizingRecording ? (
+              <button type="button" className="primary" disabled>Processando vídeo...</button>
+            ) : cameraMode === 'foto' ? (
               <button type="button" className="primary" onClick={() => void takePhoto()}><Camera size={18} /> Tirar foto</button>
             ) : recording ? (
               <button type="button" className="primary" onClick={() => finishRecording(true)}><Video size={18} /> Concluir vídeo</button>
             ) : (
               <button type="button" className="primary" onClick={startVideoRecording}><Video size={18} /> Gravar vídeo</button>
             )}
-            {cameraMode === 'video' && !recording && captureError.includes('vídeo inválido') && (
-              <button type="button" className="secondary" onClick={() => nativeCameraInputRef.current?.click()}><Video size={18} /> Vídeo do aparelho</button>
-            )}
-            <button type="button" className="secondary" onClick={() => recording ? finishRecording(false) : closeCapture()}>Cancelar</button>
+            <button type="button" className="secondary" onClick={() => recording ? finishRecording(false) : closeCapture()} disabled={finalizingRecording}>Cancelar</button>
           </div>
         </div>
       )}
@@ -1684,8 +1672,9 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
   )).length, [reports, session.user.id])
 
   async function appendFiles(files: File[]) {
-    if (!files.length) return
+    if (!files.length) return false
     setError('')
+    setSuccess('')
     let totalBytes = attachments.reduce((total, attachment) => total + attachment.size_bytes, 0)
     const next: ManagerReportDraftAttachment[] = []
 
@@ -1703,10 +1692,6 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
         setError('Os anexos devem somar no máximo 2,5 MB. Use fotos compactadas e vídeos curtos.')
         break
       }
-      if (attachmentType === 'video' && !(await canPreviewVideo(file))) {
-        setError(`O vídeo “${file.name}” não pôde ser lido neste aparelho. Escolha outro vídeo.`)
-        continue
-      }
       try {
         next.push({
           localId: `${Date.now()}-${next.length}-${file.name}`,
@@ -1722,7 +1707,12 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
       }
     }
 
-    if (next.length > 0) setAttachments((current) => [...current, ...next])
+    if (next.length === 0) return false
+    setAttachments((current) => [...current, ...next])
+    setSuccess(next.some((attachment) => attachment.attachment_type === 'video')
+      ? 'Vídeo anexado. Toque em “Enviar relatório” para concluir o envio.'
+      : 'Arquivo anexado. Toque em “Enviar relatório” para concluir o envio.')
+    return true
   }
 
   async function addFiles(event: ChangeEvent<HTMLInputElement>) {
@@ -1996,10 +1986,6 @@ function InventoryCheckPhotoCapture({
     }
     if (file.size > 2_500_000) {
       setError('A foto deve ter no máximo 2,5 MB.')
-      return
-    }
-    if (file.type.startsWith('video/') && !(await canPreviewVideo(file))) {
-      setError('Este vídeo não pôde ser lido neste aparelho. Escolha outro vídeo.')
       return
     }
     setSaving(true)
