@@ -1406,8 +1406,7 @@ function ManagerReportCapture({
         return
       }
       setCaptureMode('camera')
-      const nextStream = await createStream('video')
-      startRecorder(nextStream, 'video')
+      await createStream('video')
     } catch (err) {
       closeCapture()
       setCaptureError(permissionMessage(err))

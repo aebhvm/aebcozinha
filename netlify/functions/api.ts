@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs'
 import { SignJWT, jwtVerify } from 'jose'
 import { z } from 'zod'
 import { breakfastMenus, type MenuDay } from '../../src/menuData.js'
+import { dataUrlDecodedSize } from '../../src/mediaDataUrl.js'
 
 declare const process: { env: Record<string, string | undefined> }
 
@@ -718,14 +719,6 @@ async function getInventoryCheckItems(date: string, user?: AuthUser) {
     args: [date],
   })
   return result.rows
-}
-
-function dataUrlDecodedSize(dataUrl: string) {
-  const commaIndex = dataUrl.indexOf(',')
-  if (commaIndex < 0) return -1
-  const payload = dataUrl.slice(commaIndex + 1)
-  const padding = payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0
-  return Math.floor((payload.length * 3) / 4) - padding
 }
 
 const inventoryCheckPhotoSchema = z.object({
