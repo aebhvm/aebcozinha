@@ -1243,10 +1243,33 @@ function ManagerReportMedia({ attachment }: { attachment: ManagerReportAttachmen
       {playbackError && attachment.attachment_type === 'video' && (
         <p className="manager-report-media-error">Este navegador não conseguiu reproduzir este vídeo. Use o botão abaixo para baixar o arquivo.</p>
       )}
-      <a href={attachment.data_url} download={attachment.file_name} className="manager-report-media-caption">
+      <a href={mediaSource} download={attachment.file_name} className="manager-report-media-caption">
         {attachment.attachment_type === 'imagem' ? <ImageIcon size={15} /> : attachment.attachment_type === 'audio' ? <Mic size={15} /> : <Video size={15} />}
         <span>{attachment.file_name}</span>
         <small>{formatAttachmentSize(attachment.size_bytes)}</small>
+      </a>
+    </div>
+  )
+}
+
+function InventoryCheckMedia({ item }: { item: InventoryCheckItem }) {
+  const mediaSource = useMediaSource(item.photo_data_url ?? '', item.photo_mime_type ?? '')
+  if (!item.photo_data_url || !item.photo_mime_type) return null
+
+  const isVideo = item.photo_mime_type.startsWith('video/')
+
+  return (
+    <div className="inventory-check-media">
+      {isVideo ? (
+        <video key={mediaSource} controls preload="auto" playsInline>
+          <source src={mediaSource} type={item.photo_mime_type} />
+          Seu navegador não suporta este vídeo.
+        </video>
+      ) : (
+        <img src={mediaSource} alt={`Foto registrada de ${item.name}`} loading="lazy" />
+      )}
+      <a className="inventory-check-photo-link" href={mediaSource} download={item.photo_name || `conferencia-${item.id}.${isVideo ? 'mp4' : 'jpg'}`}>
+        <span>{isVideo ? 'Vídeo registrado' : 'Foto registrada'}</span>
       </a>
     </div>
   )
@@ -1258,7 +1281,7 @@ type ManagerReportCameraMode = 'foto' | 'video'
 function supportedRecorderMime(kind: 'audio' | 'video') {
   const candidates = kind === 'audio'
     ? ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm']
-    : ['video/mp4', 'video/webm;codecs=vp8,opus', 'video/webm']
+    : ['video/webm;codecs=vp8,opus', 'video/mp4', 'video/webm']
   return candidates.find((mime) => MediaRecorder.isTypeSupported(mime)) ?? ''
 }
 
@@ -1432,7 +1455,9 @@ function ManagerReportCapture({
     }
     recorder.onstop = () => {
       const shouldDiscard = discardRecordingRef.current
-      const recordedMime = recorder.mimeType || (kind === 'audio' ? 'audio/webm' : 'video/webm')
+      const recordedMime = chunksRef.current.find((chunk) => chunk.type)?.type
+        || recorder.mimeType
+        || (kind === 'audio' ? 'audio/webm' : 'video/webm')
       const blob = new Blob(chunksRef.current, { type: recordedMime })
       setRecording(false)
       setRequestingPermission(false)
@@ -1456,7 +1481,7 @@ function ManagerReportCapture({
       setRequestingPermission(false)
       setRecording(true)
     }
-    recorder.start()
+    recorder.start(1000)
     setRecordingSeconds(0)
     if (recorder.state === 'recording') {
       setRequestingPermission(false)
@@ -3209,18 +3234,7 @@ function InventoryCheckPage({ session, onLogout }: { session: Session; onLogout:
                     <article className="inventory-item-card" key={item.id}>
                       <div className="inventory-item-main">
                         <strong>{item.name}</strong>
-                        {item.photo_data_url && (
-                          <div className="inventory-check-media">
-                            {item.photo_mime_type?.startsWith('video/') ? (
-                              <video controls preload="metadata" playsInline src={item.photo_data_url}>Seu navegador não suporta este vídeo.</video>
-                            ) : (
-                              <img src={item.photo_data_url} alt={`Foto registrada de ${item.name}`} loading="lazy" />
-                            )}
-                            <a className="inventory-check-photo-link" href={item.photo_data_url} download={item.photo_name || `conferencia-${item.id}.${item.photo_mime_type?.startsWith('video/') ? 'mp4' : 'jpg'}`}>
-                              <span>{item.photo_mime_type?.startsWith('video/') ? 'Vídeo registrado' : 'Foto registrada'}</span>
-                            </a>
-                          </div>
-                        )}
+                        {item.photo_data_url && <InventoryCheckMedia item={item} />}
                       </div>
                       <div className="inventory-status-options" aria-label={`Status de ${item.name}`}>
                         {(['ok', 'pedir', 'produzir'] as InventoryCheckStatus[]).map((status) => (
