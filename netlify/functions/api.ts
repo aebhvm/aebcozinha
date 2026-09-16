@@ -832,12 +832,14 @@ async function getManagerReports(user: AuthUser, startDate?: string, endDate?: s
   }))
 }
 
+const managerReportMaxTotalBytes = 4_000_000
+
 const managerReportAttachmentSchema = z.object({
   attachment_type: z.enum(['imagem', 'audio', 'video']),
   file_name: z.string().trim().min(1).max(160),
   mime_type: z.string().trim().min(3).max(100),
-  size_bytes: z.number().int().positive().max(2_500_000),
-  data_url: z.string().max(3_500_000),
+  size_bytes: z.number().int().positive().max(managerReportMaxTotalBytes),
+  data_url: z.string().max(5_600_000),
 }).superRefine((attachment, context) => {
   const expectedPrefix = attachment.attachment_type === 'imagem'
     ? 'image/'
@@ -1607,8 +1609,8 @@ export async function handler(event: Event) {
       if (event.httpMethod === 'POST') {
         const body = parseBody(event, managerReportCreateSchema)
         const totalBytes = body.attachments.reduce((total, attachment) => total + attachment.size_bytes, 0)
-        if (totalBytes > 2_500_000) {
-          return json(400, { error: 'Os anexos devem somar no máximo 2,5 MB.' })
+        if (totalBytes > managerReportMaxTotalBytes) {
+          return json(400, { error: 'Os anexos devem somar no máximo 4 MB.' })
         }
         const createdAt = brazilNowIso()
         const reportTitle = body.title || (body.attachments.length > 0 ? 'Relatório com anexo' : body.title)
