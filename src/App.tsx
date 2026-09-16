@@ -41,6 +41,7 @@ import {
   useNavigate,
   useParams,
 } from 'react-router-dom'
+import { webmFixDuration } from 'webm-fix-duration'
 import { api, clearSession, getSession, saveSession } from './api'
 import { currentMenuDay, menuDays, type MenuDay } from './menuData'
 import './App.css'
@@ -1273,16 +1274,19 @@ function InventoryCheckMedia({ item }: { item: InventoryCheckItem }) {
   )
 }
 
-type ManagerReportCaptureMode = 'audio' | null
+type ManagerReportCaptureMode = 'audio' | 'camera' | null
+type ManagerReportCameraMode = 'foto' | 'video'
 
-function supportedRecorderMime() {
-  const candidates = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm']
+function supportedRecorderMime(kind: 'audio' | 'video') {
+  const candidates = kind === 'audio'
+    ? ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm']
+    : ['video/mp4', 'video/webm;codecs=vp8,opus', 'video/webm']
   return candidates.find((mime) => MediaRecorder.isTypeSupported(mime)) ?? ''
 }
 
-function recordingExtension(mimeType: string) {
+function recordingExtension(mimeType: string, kind: 'audio' | 'video') {
   if (mimeType.includes('mp4')) return 'mp4'
-  return 'webm'
+  return kind === 'audio' ? 'webm' : 'webm'
 }
 
 function canPlayVideoFile(file: File) {
@@ -1320,20 +1324,27 @@ function ManagerReportCapture({
   onCapture: (file: File) => Promise<boolean>
 }) {
   const [captureMode, setCaptureMode] = useState<ManagerReportCaptureMode>(null)
+  const [cameraMode, setCameraMode] = useState<ManagerReportCameraMode>('video')
+  const [stream, setStream] = useState<MediaStream | null>(null)
   const [recording, setRecording] = useState(false)
+  const [finalizingRecording, setFinalizingRecording] = useState(false)
   const [requestingPermission, setRequestingPermission] = useState(false)
   const [recordingSeconds, setRecordingSeconds] = useState(0)
   const [captureError, setCaptureError] = useState('')
+  const videoRef = useRef<HTMLVideoElement | null>(null)
   const nativeAudioInputRef = useRef<HTMLInputElement | null>(null)
-  const nativeVideoInputRef = useRef<HTMLInputElement | null>(null)
+  const nativeCameraInputRef = useRef<HTMLInputElement | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const discardRecordingRef = useRef(false)
+  const recordingStartedAtRef = useRef(0)
+  const recordingKindRef = useRef<'audio' | 'video'>('audio')
 
   const stopStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = null
+    setStream(null)
   }, [])
 
   const replaceStream = useCallback((nextStream: MediaStream) => {
@@ -1341,6 +1352,7 @@ function ManagerReportCapture({
       streamRef.current?.getTracks().forEach((track) => track.stop())
     }
     streamRef.current = nextStream
+    setStream(nextStream)
   }, [])
 
   const closeCapture = useCallback(() => {
@@ -1350,6 +1362,7 @@ function ManagerReportCapture({
     }
     recorderRef.current = null
     setRecording(false)
+    setFinalizingRecording(false)
     setRequestingPermission(false)
     setRecordingSeconds(0)
     stopStream()
@@ -1366,6 +1379,13 @@ function ManagerReportCapture({
   }, [])
 
   useEffect(() => {
+    if (videoRef.current && stream && captureMode === 'camera') {
+      videoRef.current.srcObject = stream
+      void videoRef.current.play().catch(() => undefined)
+    }
+  }, [captureMode, stream])
+
+  useEffect(() => {
     if (!recording) return
     const timer = window.setInterval(() => {
       setRecordingSeconds((current) => current + 1)
@@ -1375,7 +1395,7 @@ function ManagerReportCapture({
 
   useEffect(() => {
     if (!recording) return
-    const limit = 60
+    const limit = recordingKindRef.current === 'audio' ? 60 : 15
     if (recordingSeconds >= limit && recorderRef.current?.state === 'recording') {
       recorderRef.current.stop()
     }
@@ -1391,11 +1411,79 @@ function ManagerReportCapture({
     return 'Não foi possível acessar a câmera ou o microfone.'
   }
 
-  function startRecorder(nextStream: MediaStream) {
-    const mimeType = supportedRecorderMime()
-    const recorder = new MediaRecorder(nextStream, mimeType ? { mimeType } : undefined)
+  async function createStream(mode: ManagerReportCameraMode) {
+    const nextStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 480 },
+        height: { ideal: 360 },
+        frameRate: { ideal: 15, max: 20 },
+      },
+      audio: mode === 'video',
+    })
+    replaceStream(nextStream)
+    setCameraMode(mode)
+    return nextStream
+  }
+
+  async function openCamera() {
+    setCaptureError('')
+    try {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+        nativeCameraInputRef.current?.click()
+        return
+      }
+      setCaptureMode('camera')
+      await createStream('video')
+    } catch (err) {
+      closeCapture()
+      setCaptureError(permissionMessage(err))
+    }
+  }
+
+  async function changeCameraMode(mode: ManagerReportCameraMode) {
+    if (recording || finalizingRecording || mode === cameraMode) return
+    setCaptureError('')
+    try {
+      await createStream(mode)
+    } catch (err) {
+      setCaptureError(permissionMessage(err))
+    }
+  }
+
+  async function takePhoto() {
+    const video = videoRef.current
+    if (!video || !video.videoWidth || !video.videoHeight) {
+      setCaptureError('Aguarde a imagem da câmera aparecer para tirar a foto.')
+      return
+    }
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    canvas.getContext('2d')?.drawImage(video, 0, 0)
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.72))
+    if (!blob) {
+      setCaptureError('Não foi possível capturar a foto.')
+      return
+    }
+    const attached = await onCapture(new File([blob], `foto-${Date.now()}.jpg`, { type: 'image/jpeg' }))
+    if (attached) closeCapture()
+    else setCaptureError('A foto não foi anexada. Verifique o tamanho e tente novamente.')
+  }
+
+  function startRecorder(nextStream: MediaStream, kind: 'audio' | 'video') {
+    const mimeType = supportedRecorderMime(kind)
+    const recorderOptions = kind === 'audio'
+      ? (mimeType ? { mimeType } : undefined)
+      : {
+          ...(mimeType ? { mimeType } : {}),
+          audioBitsPerSecond: 32_000,
+          videoBitsPerSecond: 180_000,
+        }
+    const recorder = new MediaRecorder(nextStream, recorderOptions)
     chunksRef.current = []
     discardRecordingRef.current = false
+    recordingKindRef.current = kind
     recorderRef.current = recorder
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunksRef.current.push(event.data)
@@ -1404,7 +1492,8 @@ function ManagerReportCapture({
       const shouldDiscard = discardRecordingRef.current
       const recordedMime = chunksRef.current.find((chunk) => chunk.type)?.type
         || recorder.mimeType
-        || 'audio/webm'
+        || (kind === 'audio' ? 'audio/webm' : 'video/webm')
+      const recordedDuration = Math.max(1, Date.now() - recordingStartedAtRef.current)
       const blob = new Blob(chunksRef.current, { type: recordedMime })
       setRecording(false)
       setRequestingPermission(false)
@@ -1412,18 +1501,30 @@ function ManagerReportCapture({
       recorderRef.current = null
       chunksRef.current = []
       if (!shouldDiscard && blob.size > 0) {
+        if (kind === 'video') setFinalizingRecording(true)
         try {
-          const file = new File([blob], `audio-${Date.now()}.${recordingExtension(recordedMime)}`, { type: recordedMime })
+          const finalizedBlob = kind === 'video' && recordedMime.toLowerCase().includes('webm')
+            ? await webmFixDuration(blob, recordedDuration, 'video/webm')
+            : blob
+          const finalizedMime = finalizedBlob.type || recordedMime
+          const file = new File([finalizedBlob], `${kind}-${Date.now()}.${recordingExtension(finalizedMime, kind)}`, { type: finalizedMime })
+          if (kind === 'video' && !(await canPlayVideoFile(file))) {
+            setCaptureError('O navegador não conseguiu finalizar este vídeo. Tente gravar novamente.')
+            return
+          }
           const attached = await onCapture(file)
           if (attached) {
             closeCapture()
           } else {
-            setCaptureError('O áudio não foi anexado. Verifique o tamanho e tente novamente.')
+            setCaptureError(`O ${kind === 'video' ? 'vídeo' : 'áudio'} não foi anexado. Verifique o limite de 4 MB e tente novamente.`)
           }
         } catch (err) {
-          setCaptureError(err instanceof Error ? err.message : 'Não foi possível finalizar o áudio. Grave novamente.')
+          setCaptureError(err instanceof Error ? err.message : `Não foi possível finalizar o ${kind === 'video' ? 'vídeo' : 'áudio'}. Grave novamente.`)
+        } finally {
+          setFinalizingRecording(false)
         }
       } else if (!shouldDiscard) {
+        setFinalizingRecording(false)
         stopStream()
         setCaptureMode(null)
         setCaptureError('O navegador encerrou a gravação sem gerar áudio. Tente novamente ou use o gravador do aparelho.')
@@ -1434,6 +1535,7 @@ function ManagerReportCapture({
       closeCapture()
     }
     recorder.onstart = () => {
+      recordingStartedAtRef.current = Date.now()
       setRequestingPermission(false)
       setRecording(true)
     }
@@ -1457,10 +1559,20 @@ function ManagerReportCapture({
       const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
       setRequestingPermission(false)
       replaceStream(audioStream)
-      startRecorder(audioStream)
+      startRecorder(audioStream, 'audio')
     } catch (err) {
       closeCapture()
       setCaptureError(permissionMessage(err))
+    }
+  }
+
+  function startVideoRecording() {
+    if (!stream || cameraMode !== 'video' || finalizingRecording) return
+    setCaptureError('')
+    try {
+      startRecorder(stream, 'video')
+    } catch {
+      setCaptureError('Este navegador não conseguiu iniciar a gravação de vídeo.')
     }
   }
 
@@ -1480,21 +1592,29 @@ function ManagerReportCapture({
     if (!attached) setCaptureError('O arquivo não foi anexado. Verifique o tamanho e tente novamente.')
   }
 
-  async function addNativeVideo(event: ChangeEvent<HTMLInputElement>) {
+  async function addNativeCapture(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file) return
     setCaptureError('')
-    if (!file.type.startsWith('video/')) {
-      setCaptureError('Escolha um arquivo de vídeo do aparelho.')
+    if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
+      setCaptureError('Escolha uma foto ou vídeo do aparelho.')
       return
     }
-    if (!(await canPlayVideoFile(file))) {
+    if (file.type.startsWith('video/') && !(await canPlayVideoFile(file))) {
       setCaptureError('Este vídeo não pode ser reproduzido neste navegador. Grave novamente pela câmera do aparelho.')
       return
     }
     const attached = await onCapture(file)
     if (!attached) setCaptureError('O vídeo não foi anexado. Verifique o limite de 4 MB e tente novamente.')
+  }
+
+  function openCameraOrFallback() {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      nativeCameraInputRef.current?.click()
+      return
+    }
+    void openCamera()
   }
 
   return (
@@ -1503,8 +1623,8 @@ function ManagerReportCapture({
         <button type="button" className="secondary" onClick={() => void startAudioRecording()} disabled={disabled || captureMode !== null}>
           <Mic size={18} /> Gravar áudio
         </button>
-        <button type="button" className="secondary" onClick={() => nativeVideoInputRef.current?.click()} disabled={disabled || captureMode !== null}>
-          <Video size={18} /> Gravar vídeo pelo aparelho
+        <button type="button" className="secondary" onClick={openCameraOrFallback} disabled={disabled || captureMode !== null}>
+          <Camera size={18} /> Abrir câmera e gravar
         </button>
       </div>
 
@@ -1518,9 +1638,41 @@ function ManagerReportCapture({
         </div>
       )}
 
+      {captureMode === 'camera' && (
+        <div className="manager-report-camera">
+          <div className="manager-report-camera-tabs" role="group" aria-label="Modo da câmera">
+            <button type="button" className={cameraMode === 'foto' ? 'primary compact' : 'secondary compact'} onClick={() => void changeCameraMode('foto')} disabled={recording || finalizingRecording}>Foto</button>
+            <button type="button" className={cameraMode === 'video' ? 'primary compact' : 'secondary compact'} onClick={() => void changeCameraMode('video')} disabled={recording || finalizingRecording}>Vídeo</button>
+          </div>
+          <video ref={videoRef} muted playsInline autoPlay aria-label="Pré-visualização da câmera" />
+          {recording && (
+            <div className="manager-report-recording-status" role="status" aria-live="polite">
+              <span className="recording-dot" /> Gravando {recordingSeconds}s / 15s
+            </div>
+          )}
+          {finalizingRecording && (
+            <div className="manager-report-recording-status" role="status" aria-live="polite">
+              Processando vídeo compacto para enviar...
+            </div>
+          )}
+          <div className="manager-report-camera-actions">
+            {finalizingRecording ? (
+              <button type="button" className="primary" disabled>Processando vídeo...</button>
+            ) : cameraMode === 'foto' ? (
+              <button type="button" className="primary" onClick={() => void takePhoto()}><Camera size={18} /> Tirar foto</button>
+            ) : recording ? (
+              <button type="button" className="primary" onClick={() => finishRecording(true)}><Video size={18} /> Concluir vídeo</button>
+            ) : (
+              <button type="button" className="primary" onClick={startVideoRecording}><Video size={18} /> Gravar vídeo</button>
+            )}
+            <button type="button" className="secondary" onClick={() => recording ? finishRecording(false) : closeCapture()} disabled={finalizingRecording}>Cancelar</button>
+          </div>
+        </div>
+      )}
+
       {captureError && <p className="error">{captureError}</p>}
       <input ref={nativeAudioInputRef} className="manager-report-native-capture" type="file" accept="audio/*" capture onChange={(event) => void addNativeAudio(event)} aria-label="Gravar áudio pelo aparelho" />
-      <input ref={nativeVideoInputRef} className="manager-report-native-capture" type="file" accept="video/*" capture="environment" onChange={(event) => void addNativeVideo(event)} aria-label="Gravar vídeo pelo aparelho" />
+      <input ref={nativeCameraInputRef} className="manager-report-native-capture" type="file" accept="image/*,video/*" capture="environment" onChange={(event) => void addNativeCapture(event)} aria-label="Usar câmera do aparelho" />
     </div>
   )
 }
