@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { dataUrlDecodedSize } from './mediaDataUrl'
+import { dataUrlDecodedSize, normalizeBase64DataUrl, normalizeMediaMimeType } from './mediaDataUrl'
+
+describe('normalização de MIME de mídia', () => {
+  it('remove codecs que quebram data URLs por conterem vírgula', () => {
+    expect(normalizeMediaMimeType('video/webm;codecs=vp8,opus')).toBe('video/webm')
+    expect(normalizeBase64DataUrl('data:video/webm;codecs=vp8,opus;base64,AAAA', 'video/webm;codecs=vp8,opus'))
+      .toBe('data:video/webm;base64,AAAA')
+  })
+})
 
 describe('dataUrlDecodedSize', () => {
   it('calcula o tamanho quando o MIME do vídeo contém codecs separados por vírgula', () => {

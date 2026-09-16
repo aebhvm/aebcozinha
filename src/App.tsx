@@ -46,6 +46,7 @@ import { api, clearSession, getSession, saveSession } from './api'
 import { currentMenuDay, menuDays, type MenuDay } from './menuData'
 import './App.css'
 import { formatDate, formatDateTime, todayIso } from './date'
+import { normalizeBase64DataUrl, normalizeMediaMimeType } from './mediaDataUrl'
 import type { BreakfastMenu, BreakfastMenuItem, DayPayload, InventoryCheckItem, InventoryCheckSector, InventoryCheckStatus, ManagerReport, ManagerReportAttachment, ManagerReportAttachmentType, Notice, Priority, Product, ProductCategory, Schedule, Session, Station, StockCategory, StockMovement, StockMovementType, StockOrder, StockOrderStatus, Task, TechnicalSheet, User } from './types'
 
 type LoadState<T> = {
@@ -1185,6 +1186,12 @@ function readManagerReportFile(file: File) {
   })
 }
 
+function normalizeManagerReportFile(file: File) {
+  const mimeType = normalizeMediaMimeType(file.type)
+  if (mimeType === file.type) return file
+  return new File([file], file.name, { type: mimeType, lastModified: file.lastModified })
+}
+
 function formatAttachmentSize(size: number) {
   return size >= 1024 * 1024
     ? `${(size / 1024 / 1024).toFixed(1)} MB`
@@ -1197,11 +1204,12 @@ function useMediaSource(dataUrl: string, mimeType: string) {
   useEffect(() => {
     let disposed = false
     let objectUrl = ''
-    setSource(dataUrl)
+    const playableDataUrl = normalizeBase64DataUrl(dataUrl, mimeType)
+    setSource(playableDataUrl)
 
-    if (!dataUrl.startsWith('data:')) return () => undefined
+    if (!playableDataUrl.startsWith('data:')) return () => undefined
 
-    void fetch(dataUrl)
+    void fetch(playableDataUrl)
       .then((response) => response.blob())
       .then((blob) => {
         if (disposed) return
@@ -1506,7 +1514,7 @@ function ManagerReportCapture({
           const finalizedBlob = kind === 'video' && recordedMime.toLowerCase().includes('webm')
             ? await webmFixDuration(blob, recordedDuration, 'video/webm')
             : blob
-          const finalizedMime = finalizedBlob.type || recordedMime
+          const finalizedMime = normalizeMediaMimeType(finalizedBlob.type || recordedMime)
           const file = new File([finalizedBlob], `${kind}-${Date.now()}.${recordingExtension(finalizedMime, kind)}`, { type: finalizedMime })
           if (kind === 'video' && !(await canPlayVideoFile(file))) {
             setCaptureError('O navegador não conseguiu finalizar este vídeo. Tente gravar novamente.')
@@ -1584,18 +1592,20 @@ function ManagerReportCapture({
   }
 
   async function addNativeAudio(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
+    const selectedFile = event.target.files?.[0]
     event.target.value = ''
-    if (!file) return
+    if (!selectedFile) return
+    const file = normalizeManagerReportFile(selectedFile)
     setCaptureError('')
     const attached = await onCapture(file)
     if (!attached) setCaptureError('O arquivo não foi anexado. Verifique o tamanho e tente novamente.')
   }
 
   async function addNativeCapture(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
+    const selectedFile = event.target.files?.[0]
     event.target.value = ''
-    if (!file) return
+    if (!selectedFile) return
+    const file = normalizeManagerReportFile(selectedFile)
     setCaptureError('')
     if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
       setCaptureError('Escolha uma foto ou vídeo do aparelho.')
@@ -1722,7 +1732,8 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
     let totalBytes = attachments.reduce((total, attachment) => total + attachment.size_bytes, 0)
     const next: ManagerReportDraftAttachment[] = []
 
-    for (const file of files) {
+    for (const selectedFile of files) {
+      const file = normalizeManagerReportFile(selectedFile)
       const attachmentType = managerReportFileType(file)
       if (!attachmentType) {
         setError(`O arquivo “${file.name}” não é uma foto, áudio ou vídeo válido.`)

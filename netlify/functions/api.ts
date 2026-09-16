@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs'
 import { SignJWT, jwtVerify } from 'jose'
 import { z } from 'zod'
 import { breakfastMenus, type MenuDay } from '../../src/menuData.js'
-import { dataUrlDecodedSize } from '../../src/mediaDataUrl.js'
+import { dataUrlDecodedSize, normalizeBase64DataUrl, normalizeMediaMimeType } from '../../src/mediaDataUrl.js'
 
 declare const process: { env: Record<string, string | undefined> }
 
@@ -1622,12 +1622,16 @@ export async function handler(event: Event) {
         })
         const reportId = Number(result.rows[0]?.id)
         if (body.attachments.length > 0) {
-          await getDb().batch(body.attachments.map((attachment) => ({
-            sql: `insert into manager_report_attachments
-              (report_id, attachment_type, file_name, mime_type, size_bytes, data_url, created_at)
-              values (?, ?, ?, ?, ?, ?, ?)`,
-            args: [reportId, attachment.attachment_type, attachment.file_name, attachment.mime_type, attachment.size_bytes, attachment.data_url, createdAt],
-          })), 'write')
+          await getDb().batch(body.attachments.map((attachment) => {
+            const mimeType = normalizeMediaMimeType(attachment.mime_type)
+            const dataUrl = normalizeBase64DataUrl(attachment.data_url, mimeType)
+            return {
+              sql: `insert into manager_report_attachments
+                (report_id, attachment_type, file_name, mime_type, size_bytes, data_url, created_at)
+                values (?, ?, ?, ?, ?, ?, ?)`,
+              args: [reportId, attachment.attachment_type, attachment.file_name, mimeType, attachment.size_bytes, dataUrl, createdAt],
+            }
+          }), 'write')
         }
         const reports = await getManagerReports(user)
         return json(201, reports.find((report) => Number(report.id) === reportId))
