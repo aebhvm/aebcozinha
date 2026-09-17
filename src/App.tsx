@@ -3995,6 +3995,9 @@ function WorkerOrdersPage({ session, onLogout }: { session: Session; onLogout: (
   const [notes, setNotes] = useState('')
   const [orderDate, setOrderDate] = useState(todayIso())
   const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const [submittingOrder, setSubmittingOrder] = useState(false)
+  const submittingOrderRef = useRef(false)
 
   const load = useCallback(async () => {
     const [productsPayload, categoriesPayload, ordersPayload] = await Promise.all([
@@ -4050,16 +4053,35 @@ function WorkerOrdersPage({ session, onLogout }: { session: Session; onLogout: (
     setItems((current) => current.filter((item) => item.product_id !== productId))
   }
 
-  async function submitOrder(event: FormEvent) {
-    event.preventDefault()
+  async function submitOrder() {
+    if (submittingOrderRef.current) return
+    if (items.length === 0) {
+      setError('Adicione pelo menos um produto ao pedido.')
+      return
+    }
+    submittingOrderRef.current = true
+    setSubmittingOrder(true)
     setError('')
+    setSuccess('')
     try {
       await api.createStockOrder({ date: orderDate, notes: notes.trim() || undefined, items })
       setItems([])
       setNotes('')
+      setSuccess('Pedido enviado ao estoque. Ele não será enviado novamente.')
       await load()
     } catch (err) {
+      if (err instanceof Error && err.message === 'Este pedido já foi enviado. Ele não pode ser enviado novamente.') {
+        setItems([])
+        setNotes('')
+        setError('')
+        setSuccess('Este pedido já havia sido enviado e não foi duplicado.')
+        await load()
+        return
+      }
       setError(err instanceof Error ? err.message : 'Erro ao enviar pedido.')
+    } finally {
+      submittingOrderRef.current = false
+      setSubmittingOrder(false)
     }
   }
 
@@ -4070,7 +4092,7 @@ function WorkerOrdersPage({ session, onLogout }: { session: Session; onLogout: (
       <section className="grid two stock-layout">
         <div className="panel">
           <h2>Criar pedido</h2>
-          <form className="stack" onSubmit={submitOrder}>
+          <form className="stack" onSubmit={(event) => event.preventDefault()}>
             <label>
               Data do pedido
               <input type="date" value={orderDate} onChange={(event) => setOrderDate(event.target.value)} required />
@@ -4143,8 +4165,9 @@ function WorkerOrdersPage({ session, onLogout }: { session: Session; onLogout: (
               <textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} />
             </label>
             {error && <p className="error">{error}</p>}
-            <button className="primary" disabled={items.length === 0}>
-              <ShoppingCart size={18} /> Enviar pedido
+            {success && <p className="success-message">{success}</p>}
+            <button type="button" className="primary" onClick={() => void submitOrder()} disabled={items.length === 0 || submittingOrder}>
+              <ShoppingCart size={18} /> {submittingOrder ? 'Enviando pedido...' : 'Enviar pedido'}
             </button>
           </form>
         </div>
