@@ -4302,7 +4302,7 @@ function NoticeList({
           </div>
           <div className="row-actions">
             {notice.pdf_data_url && (
-              <a className="button secondary compact" href={notice.pdf_data_url} download={notice.pdf_name ?? 'mural.pdf'} target="_blank" rel="noreferrer">
+              <a className="button secondary compact" href={notice.pdf_data_url} target="_blank" rel="noreferrer">
                 <FileText size={16} /> PDF
               </a>
             )}
