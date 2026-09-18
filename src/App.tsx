@@ -1227,6 +1227,31 @@ function useMediaSource(dataUrl: string, mimeType: string) {
   return source
 }
 
+function openPdfInNewTab(dataUrl: string) {
+  const pdfWindow = window.open('about:blank', '_blank')
+  const normalizedDataUrl = normalizeBase64DataUrl(dataUrl, 'application/pdf')
+
+  if (!pdfWindow) {
+    window.location.assign(normalizedDataUrl)
+    return
+  }
+
+  void fetch(normalizedDataUrl)
+    .then((response) => {
+      if (!response.ok) throw new Error('PDF indisponível')
+      return response.blob()
+    })
+    .then((blob) => {
+      const objectUrl = URL.createObjectURL(blob.type ? blob : new Blob([blob], { type: 'application/pdf' }))
+      pdfWindow.location.href = objectUrl
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+    })
+    .catch(() => {
+      pdfWindow.close()
+      window.alert('Não foi possível abrir este PDF.')
+    })
+}
+
 function ManagerReportMedia({ attachment }: { attachment: ManagerReportAttachment }) {
   const mediaSource = useMediaSource(attachment.data_url, attachment.mime_type)
   const [playbackError, setPlaybackError] = useState(false)
@@ -4302,9 +4327,9 @@ function NoticeList({
           </div>
           <div className="row-actions">
             {notice.pdf_data_url && (
-              <a className="button secondary compact" href={notice.pdf_data_url} target="_blank" rel="noreferrer">
+              <button type="button" className="button secondary compact" onClick={() => openPdfInNewTab(notice.pdf_data_url!)}>
                 <FileText size={16} /> PDF
-              </a>
+              </button>
             )}
             {onEdit && (
               <button type="button" className="secondary compact" onClick={() => onEdit(notice)}>
