@@ -2691,13 +2691,20 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
   const [editingMovementId, setEditingMovementId] = useState<number | null>(null)
   const [productSearch, setProductSearch] = useState('')
   const [productForm, setProductForm] = useState({ name: '', category: '', unit: '', observations: '' })
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null)
+  const [productModalForm, setProductModalForm] = useState({ name: '', category: '', unit: '', observations: '' })
   const [loading, setLoading] = useState(true)
   const [savingMovement, setSavingMovement] = useState(false)
   const [savingProduct, setSavingProduct] = useState(false)
+  const [savingProductEdit, setSavingProductEdit] = useState(false)
+  const [deletingProductId, setDeletingProductId] = useState<number | null>(null)
   const [savingViewedId, setSavingViewedId] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [productError, setProductError] = useState('')
+  const [productModalError, setProductModalError] = useState('')
   const [success, setSuccess] = useState('')
+
+  const canManageProducts = session.user.role === 'gestor' || session.user.role === 'estoquista'
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -2861,6 +2868,70 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
     }
   }
 
+  function openProductEdit(product: Product) {
+    setEditingProduct(product)
+    setProductModalForm({
+      name: product.name,
+      category: product.category,
+      unit: product.unit,
+      observations: product.observations ?? '',
+    })
+    setProductModalError('')
+    setError('')
+    setSuccess('')
+  }
+
+  function closeProductEdit() {
+    setEditingProduct(null)
+    setProductModalForm({ name: '', category: '', unit: '', observations: '' })
+    setProductModalError('')
+  }
+
+  async function saveProductEdit(event: FormEvent) {
+    event.preventDefault()
+    if (!editingProduct) return
+    setProductModalError('')
+    setSuccess('')
+    setSavingProductEdit(true)
+    try {
+      const product = await api.updateProduct(editingProduct.id, {
+        name: productModalForm.name.trim(),
+        category: productModalForm.category.trim(),
+        unit: productModalForm.unit.trim(),
+        observations: productModalForm.observations.trim() || undefined,
+        active: Boolean(editingProduct.active),
+      })
+      if (movementForm.product_id === String(product.id)) {
+        setProductSearch(product.name)
+      }
+      closeProductEdit()
+      setSuccess(`Insumo ${product.name} atualizado com sucesso.`)
+      await load()
+    } catch (err) {
+      setProductModalError(err instanceof Error ? err.message : 'Erro ao atualizar insumo.')
+    } finally {
+      setSavingProductEdit(false)
+    }
+  }
+
+  async function deleteProduct(product: Product) {
+    if (!window.confirm(`Excluir o insumo "${product.name}"? Ele deixará de aparecer, mas o histórico será preservado.`)) return
+    setProductError('')
+    setSuccess('')
+    setDeletingProductId(product.id)
+    try {
+      await api.deleteProduct(product.id)
+      if (editingProduct?.id === product.id) closeProductEdit()
+      if (movementForm.product_id === String(product.id)) resetMovementForm()
+      setSuccess(`Insumo ${product.name} excluído com sucesso.`)
+      await load()
+    } catch (err) {
+      setProductError(err instanceof Error ? err.message : 'Erro ao excluir insumo.')
+    } finally {
+      setDeletingProductId(null)
+    }
+  }
+
   return (
     <Shell session={session} onLogout={onLogout} title="Contagem de insumos" subtitle="Registre saídas e desperdícios usando os produtos dos pedidos.">
       <section className="grid two stock-count-layout">
@@ -2964,6 +3035,36 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
               {savingProduct ? 'Salvando...' : 'Cadastrar insumo'}
             </button>
           </form>
+
+          <div className="stock-section">
+            <div className="panel-title-row">
+              <div>
+                <h2>Insumos cadastrados</h2>
+                <p className="hint">Edite ou exclua os insumos usados na contagem.</p>
+              </div>
+            </div>
+            <div className="list">
+              {products.map((product) => (
+                <article className="row-card product-row-card" key={product.id}>
+                  <div className="product-row-details">
+                    <strong className="product-row-name">{product.name}</strong>
+                    <span className="product-row-meta">{product.category} · {product.unit}</span>
+                  </div>
+                  {canManageProducts && (
+                    <div className="row-actions icon-actions">
+                      <button type="button" className="secondary icon-button" onClick={() => openProductEdit(product)} aria-label={`Editar ${product.name}`} title="Editar">
+                        <Edit3 size={17} />
+                      </button>
+                      <button type="button" className="danger-button icon-button" onClick={() => void deleteProduct(product)} disabled={deletingProductId === product.id} aria-label={`Excluir ${product.name}`} title="Excluir">
+                        <Trash2 size={17} />
+                      </button>
+                    </div>
+                  )}
+                </article>
+              ))}
+              {products.length === 0 && <p className="empty">Nenhum insumo cadastrado.</p>}
+            </div>
+          </div>
         </div>
       </section>
 
@@ -3009,6 +3110,49 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
           </div>
         )}
       </section>
+
+      {editingProduct && (
+        <div className="technical-modal-backdrop" role="presentation" onClick={closeProductEdit}>
+          <form className="technical-modal stack" role="dialog" aria-modal="true" aria-labelledby="product-edit-title" onSubmit={saveProductEdit} onClick={(event) => event.stopPropagation()}>
+            <div className="technical-modal-header">
+              <div>
+                <p className="eyebrow">Contagem de insumos</p>
+                <h2 id="product-edit-title">Editar insumo</h2>
+              </div>
+              <button type="button" className="secondary icon-button" onClick={closeProductEdit} aria-label="Fechar edição" title="Fechar">
+                <X size={18} />
+              </button>
+            </div>
+            <label>
+              Produto
+              <input value={productModalForm.name} onChange={(event) => setProductModalForm({ ...productModalForm, name: event.target.value })} required autoFocus />
+            </label>
+            <label>
+              Categoria
+              <select value={productModalForm.category} onChange={(event) => setProductModalForm({ ...productModalForm, category: event.target.value })} required>
+                <option value="">Selecione...</option>
+                {categories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}
+                {!categories.some((category) => category.name === productModalForm.category) && productModalForm.category && <option value={productModalForm.category}>{productModalForm.category}</option>}
+              </select>
+            </label>
+            <label>
+              Unidade de medida
+              <input value={productModalForm.unit} onChange={(event) => setProductModalForm({ ...productModalForm, unit: event.target.value })} required />
+            </label>
+            <label>
+              Observação
+              <textarea value={productModalForm.observations} onChange={(event) => setProductModalForm({ ...productModalForm, observations: event.target.value })} rows={3} />
+            </label>
+            {productModalError && <p className="error">{productModalError}</p>}
+            <div className="technical-modal-actions">
+              <button type="button" className="secondary" onClick={closeProductEdit}>Cancelar</button>
+              <button className="primary" disabled={savingProductEdit || !productModalForm.name.trim() || !productModalForm.category.trim() || !productModalForm.unit.trim()}>
+                {savingProductEdit ? 'Salvando...' : 'Salvar alteração'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </Shell>
   )
 }
