@@ -2935,7 +2935,7 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
   return (
     <Shell session={session} onLogout={onLogout} title="Contagem de insumos" subtitle="Registre saídas e desperdícios usando os produtos dos pedidos.">
       <section className="grid two stock-count-layout">
-        <div className="panel">
+        <div className="panel stock-count-movement-panel">
           <div className="panel-title-row">
             <div>
               <h2>Registrar movimentação</h2>
@@ -3007,7 +3007,7 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
           </form>
         </div>
 
-        <div className="panel">
+        <div className="panel stock-count-product-panel">
           <h2>Novo insumo</h2>
           <p className="hint">Se o produto não aparecer nos pedidos, cadastre-o aqui para usar na contagem e nos próximos pedidos.</p>
           <form className="stack" onSubmit={submitProduct}>

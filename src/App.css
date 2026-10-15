@@ -1400,6 +1400,19 @@ button:disabled {
 }
 
 @media (max-width: 820px) {
+  .stock-count-layout {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .stock-count-movement-panel {
+    order: -1;
+  }
+
+  .stock-count-product-panel {
+    order: 0;
+  }
+
   .stock-count-form-row {
     grid-template-columns: 1fr;
   }
