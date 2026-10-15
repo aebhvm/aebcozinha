@@ -2934,6 +2934,7 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
 
   return (
     <Shell session={session} onLogout={onLogout} title="Contagem de insumos" subtitle="Registre saídas e desperdícios usando os produtos dos pedidos.">
+      <div className={session.user.role === 'gestor' ? 'stock-count-page-sections stock-count-manager-sections' : undefined}>
       <section className="grid two stock-count-layout">
         <div className="panel stock-count-movement-panel">
           <div className="panel-title-row">
@@ -2941,10 +2942,12 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
               <h2>Registrar movimentação</h2>
               <p className="hint">A unidade vem do cadastro do produto.</p>
             </div>
-            <label className="compact-label">
-              Data
-              <input type="date" value={movementDate} onChange={(event) => setMovementDate(event.target.value)} required />
-            </label>
+            {session.user.role !== 'gestor' && (
+              <label className="compact-label">
+                Data
+                <input type="date" value={movementDate} onChange={(event) => setMovementDate(event.target.value)} required />
+              </label>
+            )}
           </div>
           <form className="stack stock-count-entry-form" onSubmit={submitMovement}>
             <label>
@@ -3068,7 +3071,7 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
         </div>
       </section>
 
-      <section className="panel">
+      <section className="panel stock-count-history-panel">
         <div className="panel-title-row">
           <div>
             <h2>Movimentações de {formatDate(movementDate)}</h2>
@@ -3083,6 +3086,12 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
               </button>
             </div>
           </div>
+          {session.user.role === 'gestor' && (
+            <label className="compact-label">
+              Data
+              <input type="date" value={movementDate} onChange={(event) => setMovementDate(event.target.value)} required />
+            </label>
+          )}
         </div>
         {loading ? <p className="empty">Carregando registros...</p> : visibleMovements.length === 0 ? <p className="empty">Nenhum registro encontrado para este filtro.</p> : (
           <div className="stock-count-table-wrap">
@@ -3110,6 +3119,7 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
           </div>
         )}
       </section>
+      </div>
 
       {editingProduct && (
         <div className="technical-modal-backdrop" role="presentation" onClick={closeProductEdit}>

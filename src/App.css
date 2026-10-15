@@ -1283,6 +1283,20 @@ button:disabled {
   min-width: 0;
 }
 
+.stock-count-page-sections {
+  display: contents;
+}
+
+.stock-count-manager-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.stock-count-manager-sections .stock-count-history-panel {
+  order: -1;
+}
+
 .stock-count-layout .panel {
   align-self: start;
   min-width: 0;
