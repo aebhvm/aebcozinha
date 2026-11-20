@@ -4168,7 +4168,6 @@ function WorkerOrdersPage({ session, onLogout }: { session: Session; onLogout: (
   const [orders, setOrders] = useState<StockOrder[]>([])
   const [category, setCategory] = useState<'todas' | ProductCategory>('todas')
   const [selectedProductId, setSelectedProductId] = useState('')
-  const [productSearch, setProductSearch] = useState('')
   const [quantity, setQuantity] = useState('')
   const [items, setItems] = useState<Array<{ product_id: number; quantity: string }>>([])
   const [notes, setNotes] = useState('')
@@ -4198,14 +4197,6 @@ function WorkerOrdersPage({ session, onLogout }: { session: Session; onLogout: (
     [products, category],
   )
 
-  const matchingProducts = useMemo(() => {
-    const normalizedSearch = productSearch.trim().toLocaleLowerCase('pt-BR').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    if (!normalizedSearch) return []
-    return visibleProducts
-      .filter((product) => product.name.toLocaleLowerCase('pt-BR').normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(normalizedSearch))
-      .slice(0, 8)
-  }, [productSearch, visibleProducts])
-
   function productById(id: number) {
     return products.find((product) => product.id === id)
   }
@@ -4219,13 +4210,7 @@ function WorkerOrdersPage({ session, onLogout }: { session: Session; onLogout: (
       return [...withoutSameProduct, { product_id: productId, quantity: trimmedQuantity }]
     })
     setSelectedProductId('')
-    setProductSearch('')
     setQuantity('')
-  }
-
-  function selectProduct(product: Product) {
-    setSelectedProductId(String(product.id))
-    setProductSearch(product.name)
   }
 
   function removeItem(productId: number) {
@@ -4278,37 +4263,21 @@ function WorkerOrdersPage({ session, onLogout }: { session: Session; onLogout: (
             </label>
 
             <div className="segmented-control" aria-label="Filtrar produtos">
-              <button type="button" className={category === 'todas' ? 'active' : ''} onClick={() => { setCategory('todas'); setSelectedProductId(''); setProductSearch('') }}>Todos</button>
+              <button type="button" className={category === 'todas' ? 'active' : ''} onClick={() => { setCategory('todas'); setSelectedProductId('') }}>Todos</button>
               {categories.map((item) => (
-                <button type="button" key={item.id} className={category === item.name ? 'active' : ''} onClick={() => { setCategory(item.name); setSelectedProductId(''); setProductSearch('') }}>{item.name}</button>
+                <button type="button" key={item.id} className={category === item.name ? 'active' : ''} onClick={() => { setCategory(item.name); setSelectedProductId('') }}>{item.name}</button>
               ))}
             </div>
 
             <div className="order-form-row">
               <label>
                 Produto
-                <div className="product-search">
-                  <input
-                    value={productSearch}
-                    onChange={(event) => { setProductSearch(event.target.value); setSelectedProductId('') }}
-                    placeholder="Digite o nome do produto"
-                    autoComplete="off"
-                    role="combobox"
-                    aria-autocomplete="list"
-                    aria-expanded={productSearch.trim().length > 0 && !selectedProductId}
-                  />
-                  {productSearch.trim().length > 0 && !selectedProductId && (
-                    <div className="product-suggestions" role="listbox" aria-label="Produtos encontrados">
-                      {matchingProducts.map((product) => (
-                        <button type="button" className="product-suggestion" key={product.id} onClick={() => selectProduct(product)}>
-                          <span>{product.name}</span>
-                          <small>{product.unit}</small>
-                        </button>
-                      ))}
-                      {matchingProducts.length === 0 && <p className="product-suggestions-empty">Nenhum produto encontrado.</p>}
-                    </div>
-                  )}
-                </div>
+                <select value={selectedProductId} onChange={(event) => setSelectedProductId(event.target.value)}>
+                  <option value="">Selecione um produto</option>
+                  {visibleProducts.map((product) => (
+                    <option key={product.id} value={product.id}>{product.name} — {product.unit}</option>
+                  ))}
+                </select>
               </label>
               <label>
                 Quantidade
