@@ -1547,6 +1547,50 @@ button:disabled {
   align-items: end;
 }
 
+.stock-order-create-form,
+.stock-order-create-form label,
+.stock-order-create-form input,
+.stock-order-create-form select,
+.stock-order-create-form textarea,
+.stock-order-create-form .order-form-row {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.stock-order-create-form {
+  grid-template-columns: minmax(0, 1fr);
+  container-type: inline-size;
+}
+
+.stock-order-create-form .segmented-control {
+  width: 100%;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.stock-order-create-form .segmented-control button {
+  flex: 1 1 auto;
+  min-height: 44px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@container (max-width: 560px) {
+  .stock-order-create-form .order-form-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .stock-order-create-form .order-form-row > label:first-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@container (max-width: 340px) {
+  .stock-order-create-form .order-form-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .product-search {
   position: relative;
 }

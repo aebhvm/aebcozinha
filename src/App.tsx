@@ -4256,7 +4256,7 @@ function WorkerOrdersPage({ session, onLogout }: { session: Session; onLogout: (
       <section className="grid two stock-layout">
         <div className="panel">
           <h2>Criar pedido</h2>
-          <form className="stack" onSubmit={(event) => event.preventDefault()}>
+          <form className="stack stock-order-create-form" onSubmit={(event) => event.preventDefault()}>
             <label>
               Data do pedido
               <input type="date" value={orderDate} onChange={(event) => setOrderDate(event.target.value)} required />
