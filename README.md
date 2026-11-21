@@ -45,6 +45,15 @@ O valor de `DATABASE_URL` deve ser o connection string do Neon e nunca deve ser 
 ## Scripts
 
 ```bash
+npm run lint
 npm run build
 npm run test
 ```
+
+O build verifica os tipos do frontend, da API, do adaptador e do servidor local. Os testes da API usam banco simulado e não precisam de credenciais reais.
+
+## Hospedagem na Vercel
+
+`vercel.json` publica o frontend Vite e encaminha `/api/*` para `api/relay.ts`, que reutiliza o handler de `netlify/functions/api.ts`. Configure as variáveis de ambiente do servidor no projeto correto da Vercel; nunca use prefixo `VITE_` para credenciais. As regras de cabeçalhos de Netlify e Vercel precisam ser mantidas alinhadas.
+
+Auditoria técnica e limitações conhecidas: [relatório de 21/11/2026](docs/auditoria-final-2026-11-21.md).

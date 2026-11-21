@@ -1905,8 +1905,13 @@ export async function handler(event: Event) {
 
     return json(404, { error: 'Rota não encontrada.' })
   } catch (error) {
-    const statusCode = typeof error === 'object' && error && 'statusCode' in error ? Number(error.statusCode) : 400
-    const message = error instanceof Error ? error.message : 'Erro inesperado.'
-    return json(statusCode, { error: message })
+    if (error instanceof z.ZodError || error instanceof SyntaxError) {
+      return json(400, { error: 'Dados inválidos. Confira os campos enviados.' })
+    }
+    const statusCode = typeof error === 'object' && error && 'statusCode' in error ? Number(error.statusCode) : 500
+    if (Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 500) {
+      return json(statusCode, { error: error instanceof Error ? error.message : 'Não foi possível concluir a ação.' })
+    }
+    return json(500, { error: 'Não foi possível concluir a ação. Tente novamente mais tarde.' })
   }
 }
