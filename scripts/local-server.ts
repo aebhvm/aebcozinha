@@ -46,7 +46,7 @@ createServer(async (request, response) => {
       })
 
       response.writeHead(result.statusCode, result.headers)
-      response.end(result.body)
+      response.end('isBase64Encoded' in result && result.isBase64Encoded ? Buffer.from(result.body, 'base64') : result.body)
       return
     }
 

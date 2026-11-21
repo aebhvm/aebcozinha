@@ -1,5 +1,7 @@
 # Auditoria final — Cozinha — 21/11/2026
 
+Atualização posterior: [correções autorizadas e verificadas](correcoes-auditoria-2026-11-21.md). Os achados abaixo registram a situação encontrada na auditoria inicial.
+
 ## Resumo e parecer
 
 **NÃO VERIFICADO para aprovação integral de produção.** A revisão de código e as verificações locais foram concluídas, com correções proporcionais. Permanecem lacunas fundamentais de integração autenticada, regras de acesso por objeto e controles da infraestrutura. Não foi demonstrada exploração crítica/alta em produção; isso não elimina os riscos potenciais descritos abaixo.

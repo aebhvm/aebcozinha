@@ -14,15 +14,16 @@ beforeEach(() => {
   vi.stubEnv('DATABASE_URL', 'postgresql://test-only.invalid/audit')
   vi.stubEnv('JWT_SECRET', testSecret)
   query.mockReset()
-  query.mockImplementation(async (sql: string) => {
-    if (sql.includes('from app_meta')) return [{ value: '2026-09-17-stock-orders-idempotency-v1' }]
+  query.mockImplementation(async (sql: string, args?: unknown[]) => {
+    if (sql.includes('from app_meta')) return [{ value: args?.[0] === 'security_schema_version' ? '2026-11-21-login-security-v1' : '2026-09-17-stock-orders-idempotency-v1' }]
+    if (sql.includes('insert into auth_login_limits')) return [{ attempts: 1, retry_after: 900 }]
     if (sql.includes('from users where id')) return [{ id: 7, name: 'Teste', username: 'teste', role: 'colaborador', active: 1 }]
     return []
   })
 })
 
 async function request(path: string, method = 'GET', body: string | null = null, token?: string) {
-  const { handler } = await import('./api')
+  const { handler } = await import('../netlify/functions/api')
   return handler({ path: `/api${path}`, rawUrl: `https://test.invalid/api${path}`, httpMethod: method, body, headers: token ? { authorization: `Bearer ${token}` } : {} })
 }
 
@@ -45,7 +46,7 @@ describe('API security boundaries with mocked database', () => {
     expect((await request('/users', 'GET', null, await token('0s'))).statusCode).toBe(401)
   })
   it('rejects inactive users even with a signed token', async () => {
-    query.mockImplementation(async (sql: string) => sql.includes('from app_meta') ? [{ value: '2026-09-17-stock-orders-idempotency-v1' }] : [])
+    query.mockImplementation(async (sql: string, args?: unknown[]) => sql.includes('from app_meta') ? [{ value: args?.[0] === 'security_schema_version' ? '2026-11-21-login-security-v1' : '2026-09-17-stock-orders-idempotency-v1' }] : [])
     expect((await request('/users', 'GET', null, await token())).statusCode).toBe(401)
   })
   it('denies collaborator access to the user administration', async () => {
@@ -59,8 +60,8 @@ describe('API security boundaries with mocked database', () => {
     expect((await request(path, method, '{}', await token())).statusCode).toBe(403)
   })
   it('allows the manager to list users', async () => {
-    query.mockImplementation(async (sql: string) => {
-      if (sql.includes('from app_meta')) return [{ value: '2026-09-17-stock-orders-idempotency-v1' }]
+    query.mockImplementation(async (sql: string, args?: unknown[]) => {
+      if (sql.includes('from app_meta')) return [{ value: args?.[0] === 'security_schema_version' ? '2026-11-21-login-security-v1' : '2026-09-17-stock-orders-idempotency-v1' }]
       if (sql.includes('from users where id')) return [{ id: 7, name: 'Teste', username: 'teste', role: 'gestor', active: 1 }]
       return []
     })

@@ -50,10 +50,12 @@ npm run build
 npm run test
 ```
 
-O build verifica os tipos do frontend, da API, do adaptador e do servidor local. Os testes da API usam banco simulado e não precisam de credenciais reais.
+O build verifica os tipos do frontend, da API, do adaptador e do servidor local. Os testes da API incluem PostgreSQL descartável em memória (PGlite) e não precisam de credenciais reais.
 
 ## Hospedagem na Vercel
 
 `vercel.json` publica o frontend Vite e encaminha `/api/*` para `api/relay.ts`, que reutiliza o handler de `netlify/functions/api.ts`. Configure as variáveis de ambiente do servidor no projeto correto da Vercel; nunca use prefixo `VITE_` para credenciais. As regras de cabeçalhos de Netlify e Vercel precisam ser mantidas alinhadas.
 
 Auditoria técnica e limitações conhecidas: [relatório de 21/11/2026](docs/auditoria-final-2026-11-21.md).
+
+Correções e migração aditiva de segurança: [registro de implementação](docs/correcoes-auditoria-2026-11-21.md). Na primeira execução da nova versão, o servidor aplica essa migração em transação, sem excluir dados ou reaplicar migrações antigas. O login limita tentativas por conta e IP confiável; trocar o PIN ou desativar um usuário revoga suas sessões anteriores.

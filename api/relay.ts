@@ -28,7 +28,8 @@ export default {
       body: request.method === 'GET' || request.method === 'HEAD' ? null : await request.text(),
     })
 
-    return new Response(result.body, {
+    const body = 'isBase64Encoded' in result && result.isBase64Encoded ? Buffer.from(result.body, 'base64') : result.body
+    return new Response(body, {
       status: result.statusCode,
       headers: result.headers,
     })

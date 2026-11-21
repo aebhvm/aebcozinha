@@ -46,7 +46,7 @@ import { api, clearSession, getSession, saveSession } from './api'
 import { currentMenuDay, menuDays, type MenuDay } from './menuData'
 import './App.css'
 import { formatDate, formatDateTime, todayIso } from './date'
-import { normalizeBase64DataUrl, normalizeMediaMimeType } from './mediaDataUrl'
+import { base64DataUrlToBlob, normalizeBase64DataUrl, normalizeMediaMimeType } from './mediaDataUrl'
 import type { BreakfastMenu, BreakfastMenuItem, DayPayload, InventoryCheckItem, InventoryCheckSector, InventoryCheckStatus, ManagerReport, ManagerReportAttachment, ManagerReportAttachmentType, Notice, Priority, Product, ProductCategory, Schedule, Session, Station, StockCategory, StockMovement, StockMovementType, StockOrder, StockOrderStatus, Task, TechnicalSheet, User } from './types'
 
 type LoadState<T> = {
@@ -1165,10 +1165,10 @@ function StationsPage({ session, onLogout }: { session: Session; onLogout: () =>
   )
 }
 
-const managerReportMaxTotalBytes = 4_000_000
+const managerReportMaxTotalBytes = 3_000_000
 const managerReportMaxFiles = 6
 
-type ManagerReportDraftAttachment = Omit<ManagerReportAttachment, 'id' | 'report_id'> & { localId: string }
+type ManagerReportDraftAttachment = Omit<ManagerReportAttachment, 'id' | 'report_id'> & { localId: string; data_url: string }
 
 function managerReportFileType(file: File): ManagerReportAttachmentType | null {
   if (file.type.startsWith('image/')) return 'imagem'
@@ -1202,24 +1202,20 @@ function useMediaSource(dataUrl: string, mimeType: string) {
   const [source, setSource] = useState(dataUrl)
 
   useEffect(() => {
-    let disposed = false
     let objectUrl = ''
     const playableDataUrl = normalizeBase64DataUrl(dataUrl, mimeType)
     setSource(playableDataUrl)
 
     if (!playableDataUrl.startsWith('data:')) return () => undefined
 
-    void fetch(playableDataUrl)
-      .then((response) => response.blob())
-      .then((blob) => {
-        if (disposed) return
-        objectUrl = URL.createObjectURL(blob.type ? blob : new Blob([blob], { type: mimeType }))
-        setSource(objectUrl)
-      })
-      .catch(() => undefined)
+    try {
+      objectUrl = URL.createObjectURL(base64DataUrlToBlob(playableDataUrl, mimeType))
+      setSource(objectUrl)
+    } catch {
+      // Preserve the browser's native media fallback for an invalid legacy file.
+    }
 
     return () => {
-      disposed = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [dataUrl, mimeType])
@@ -1229,54 +1225,77 @@ function useMediaSource(dataUrl: string, mimeType: string) {
 
 function openPdfInNewTab(dataUrl: string) {
   const pdfWindow = window.open('about:blank', '_blank')
-  const normalizedDataUrl = normalizeBase64DataUrl(dataUrl, 'application/pdf')
-
-  if (!pdfWindow) {
-    window.location.assign(normalizedDataUrl)
-    return
+  try {
+    const objectUrl = URL.createObjectURL(base64DataUrlToBlob(dataUrl, 'application/pdf'))
+    if (pdfWindow) pdfWindow.location.href = objectUrl
+    else window.location.assign(objectUrl)
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+  } catch {
+    pdfWindow?.close()
+    window.alert('Não foi possível abrir este PDF.')
   }
-
-  void fetch(normalizedDataUrl)
-    .then((response) => {
-      if (!response.ok) throw new Error('PDF indisponível')
-      return response.blob()
-    })
-    .then((blob) => {
-      const objectUrl = URL.createObjectURL(blob.type ? blob : new Blob([blob], { type: 'application/pdf' }))
-      pdfWindow.location.href = objectUrl
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
-    })
-    .catch(() => {
-      pdfWindow.close()
-      window.alert('Não foi possível abrir este PDF.')
-    })
 }
 
 function ManagerReportMedia({ attachment }: { attachment: ManagerReportAttachment }) {
-  const mediaSource = useMediaSource(attachment.data_url, attachment.mime_type)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [dataUrl, setDataUrl] = useState(attachment.data_url ?? '')
+  const [loadError, setLoadError] = useState(false)
+  const [loadAttempt, setLoadAttempt] = useState(0)
+  const mediaSource = useMediaSource(dataUrl, attachment.mime_type)
   const [playbackError, setPlaybackError] = useState(false)
+
+  useEffect(() => {
+    setDataUrl(attachment.data_url ?? '')
+    setLoadError(false)
+    if (attachment.data_url) return
+    const controller = new AbortController()
+    let objectUrl = ''
+    let started = false
+    const load = () => {
+      if (started) return
+      started = true
+      void api.managerReportAttachment(attachment.id, controller.signal)
+        .then((blob) => {
+          if (controller.signal.aborted) return
+          objectUrl = URL.createObjectURL(blob)
+          setDataUrl(objectUrl)
+        })
+        .catch(() => { if (!controller.signal.aborted) setLoadError(true) })
+    }
+    if (!('IntersectionObserver' in window)) {
+      load()
+      return () => { controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl) }
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) { observer.disconnect(); load() }
+    }, { rootMargin: '200px' })
+    if (containerRef.current) observer.observe(containerRef.current)
+    return () => { observer.disconnect(); controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl) }
+  }, [attachment.id, attachment.data_url, loadAttempt])
 
   useEffect(() => {
     setPlaybackError(false)
   }, [mediaSource])
 
   return (
-    <div className="manager-report-media-item">
-      {attachment.attachment_type === 'imagem' && (
+    <div className="manager-report-media-item" ref={containerRef}>
+      {!mediaSource && !loadError && <p className="hint" role="status">Carregando anexo...</p>}
+      {loadError && <button type="button" className="secondary" onClick={() => setLoadAttempt((value) => value + 1)}>Tentar carregar anexo novamente</button>}
+      {mediaSource && attachment.attachment_type === 'imagem' && (
         <img src={mediaSource} alt={attachment.file_name} loading="lazy" />
       )}
-      {attachment.attachment_type === 'audio' && (
+      {mediaSource && attachment.attachment_type === 'audio' && (
         <audio controls preload="metadata" src={mediaSource}>Seu navegador não suporta áudio.</audio>
       )}
-      {attachment.attachment_type === 'video' && (
-        <video key={mediaSource} controls preload="auto" playsInline src={mediaSource} onError={() => setPlaybackError(true)}>
+      {mediaSource && attachment.attachment_type === 'video' && (
+        <video key={mediaSource} controls preload="metadata" playsInline src={mediaSource} onError={() => setPlaybackError(true)}>
           Seu navegador não suporta vídeo.
         </video>
       )}
       {playbackError && attachment.attachment_type === 'video' && (
         <p className="manager-report-media-error">Este navegador não conseguiu reproduzir este vídeo. Use o botão abaixo para baixar o arquivo.</p>
       )}
-      <a href={mediaSource} download={attachment.file_name} className="manager-report-media-caption">
+      <a href={mediaSource || undefined} download={attachment.file_name} className="manager-report-media-caption" aria-disabled={!mediaSource}>
         {attachment.attachment_type === 'imagem' ? <ImageIcon size={15} /> : attachment.attachment_type === 'audio' ? <Mic size={15} /> : <Video size={15} />}
         <span>{attachment.file_name}</span>
         <small>{formatAttachmentSize(attachment.size_bytes)}</small>
@@ -1549,7 +1568,7 @@ function ManagerReportCapture({
           if (attached) {
             closeCapture()
           } else {
-            setCaptureError(`O ${kind === 'video' ? 'vídeo' : 'áudio'} não foi anexado. Verifique o limite de 4 MB e tente novamente.`)
+            setCaptureError(`O ${kind === 'video' ? 'vídeo' : 'áudio'} não foi anexado. Verifique o limite de 3 MB e tente novamente.`)
           }
         } catch (err) {
           setCaptureError(err instanceof Error ? err.message : `Não foi possível finalizar o ${kind === 'video' ? 'vídeo' : 'áudio'}. Grave novamente.`)
@@ -1641,7 +1660,7 @@ function ManagerReportCapture({
       return
     }
     const attached = await onCapture(file)
-    if (!attached) setCaptureError('O vídeo não foi anexado. Verifique o limite de 4 MB e tente novamente.')
+    if (!attached) setCaptureError('O vídeo não foi anexado. Verifique o limite de 3 MB e tente novamente.')
   }
 
   function openCameraOrFallback() {
@@ -1769,7 +1788,7 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
         break
       }
       if (totalBytes + file.size > managerReportMaxTotalBytes) {
-        setError('Os anexos devem somar no máximo 4 MB. Grave vídeos curtos pelo aparelho.')
+        setError('Os anexos devem somar no máximo 3 MB. Grave vídeos curtos pelo aparelho.')
         break
       }
       if (attachmentType === 'video' && !(await canPlayVideoFile(file))) {
@@ -1897,7 +1916,7 @@ function ManagerReportsPage({ session, onLogout }: { session: Session; onLogout:
           <label className="manager-report-file-picker">
             <Paperclip size={19} />
             <span>Anexar fotos, áudios ou vídeos</span>
-            <small>Até {managerReportMaxFiles} arquivos e 4 MB no total</small>
+            <small>Até {managerReportMaxFiles} arquivos e 3 MB no total</small>
             <input type="file" accept="image/*,audio/*,video/*" multiple onChange={(event) => void addFiles(event)} />
           </label>
           <ManagerReportCapture
@@ -2705,6 +2724,7 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
   const [success, setSuccess] = useState('')
 
   const canManageProducts = session.user.role === 'gestor' || session.user.role === 'estoquista'
+  const canEditMovement = (movement: StockMovement) => session.user.role === 'gestor' || Number(movement.created_by) === session.user.id
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -3107,8 +3127,8 @@ function StockCountPage({ session, onLogout }: { session: Session; onLogout: () 
                     <td>{movement.created_by_name}</td>
                     <td>
                       <div className="row-actions icon-actions stock-movement-actions">
-                        <button type="button" className="secondary icon-button" onClick={() => editMovement(movement)} aria-label={`Editar movimentação de ${movement.product_name}`} title="Editar"><Edit3 size={16} /></button>
-                        <button type="button" className="danger-button icon-button" onClick={() => void deleteMovement(movement)} aria-label={`Excluir movimentação de ${movement.product_name}`} title="Excluir"><Trash2 size={16} /></button>
+                        {canEditMovement(movement) && <button type="button" className="secondary icon-button" onClick={() => editMovement(movement)} aria-label={`Editar movimentação de ${movement.product_name}`} title="Editar"><Edit3 size={16} /></button>}
+                        {canEditMovement(movement) && <button type="button" className="danger-button icon-button" onClick={() => void deleteMovement(movement)} aria-label={`Excluir movimentação de ${movement.product_name}`} title="Excluir"><Trash2 size={16} /></button>}
                         {movement.viewed_by_me ? <span className="pill movement-viewed">Visto</span> : <button type="button" className="secondary compact" onClick={() => void markMovementViewed(movement)} disabled={savingViewedId !== null} aria-label={`Marcar movimentação de ${movement.product_name} como vista`}><CheckCircle2 size={15} /> Visto</button>}
                       </div>
                     </td>

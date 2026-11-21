@@ -1,4 +1,6 @@
-import { neon } from '@neondatabase/serverless'
+import { getDb, type Db, type DbRow } from './lib/database.js'
+import { createOrderStatement, createReportStatement } from './lib/persistence.js'
+import { ensureSecuritySchema, checkLoginAttempts, clearLoginAttempts } from './lib/security.js'
 import bcrypt from 'bcryptjs'
 import { SignJWT, jwtVerify } from 'jose'
 import { z } from 'zod'
@@ -18,6 +20,8 @@ type AuthUser = {
 }
 
 const DEFAULT_ALLOWED_ORIGIN = 'https://escala-cozinha-aebvmhotel1.netlify.app'
+// This hash is never assigned to an account; it equalizes missing-user checks.
+const missingUserPinHash = bcrypt.hashSync('unassigned-account-placeholder', 10)
 
 function jwtSecretBytes() {
   const value = process.env.JWT_SECRET?.trim() ?? ''
@@ -44,14 +48,6 @@ type Event = {
   body: string | null
 }
 
-type DbStatement = string | { sql: string; args?: unknown[] }
-type DbRow = Record<string, unknown>
-type Db = {
-  execute: (statement: DbStatement) => Promise<{ rows: DbRow[] }>
-  batch: (statements: DbStatement[], mode?: string) => Promise<void>
-}
-
-let db: Db | null = null
 let ready: Promise<void> | null = null
 
 const SCHEMA_VERSION = '2026-09-17-stock-orders-idempotency-v1'
@@ -70,37 +66,12 @@ const json = (statusCode: number, body: unknown) => ({
   body: JSON.stringify(body),
 })
 
-function getDb() {
-  if (!db) {
-    const connectionString = process.env.DATABASE_URL ?? process.env.NEON_DATABASE_URL
-    if (!connectionString) throw new Error('DATABASE_URL do Neon não configurada.')
-    const sql = neon(connectionString)
-    const convertPlaceholders = (query: string) => {
-      let index = 0
-      return query.replace(/\?/g, () => `$${++index}`)
-    }
-    const execute = async (statement: DbStatement) => {
-      const query = typeof statement === 'string' ? statement : statement.sql
-      const args = typeof statement === 'string' ? [] : statement.args ?? []
-      const rows = await sql.query(convertPlaceholders(query), args)
-      return { rows: rows as DbRow[] }
-    }
-    db = {
-      execute,
-      batch: async (statements) => {
-        for (const statement of statements) await execute(statement)
-      },
-    }
-  }
-
-  return db
-}
-
 async function ensureDb() {
   if (!ready) {
-    ready = migrate()
+    ready = migrate().catch((error: unknown) => { ready = null; throw error })
   }
   await ready
+  await ensureSecuritySchema()
 }
 
 async function migrate() {
@@ -568,9 +539,9 @@ function toPublicUser(row: Record<string, unknown>): AuthUser {
   }
 }
 
-async function sign(user: AuthUser) {
+async function sign(user: AuthUser, sessionVersion: number) {
   const secret = jwtSecretBytes()
-  return new SignJWT({ role: user.role, username: user.username })
+  return new SignJWT({ role: user.role, username: user.username, session_version: sessionVersion })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(String(user.id))
     .setIssuedAt()
@@ -585,13 +556,14 @@ async function currentUser(event: Event): Promise<AuthUser | null> {
 
   try {
     const secret = jwtSecretBytes()
-    const verified = await jwtVerify(token, secret)
+    const verified = await jwtVerify(token, secret, { algorithms: ['HS256'] })
     const result = await getDb().execute({
-      sql: 'select id, name, username, role, active from users where id = ? and active = 1',
+      sql: 'select id, name, username, role, active, session_version from users where id = ? and active = 1',
       args: [Number(verified.payload.sub)],
     })
     const row = result.rows[0]
-    return row ? toPublicUser(row as Record<string, unknown>) : null
+    if (!row || Number(verified.payload.session_version ?? 0) !== Number(row.session_version ?? 0)) return null
+    return toPublicUser(row)
   } catch {
     return null
   }
@@ -688,7 +660,7 @@ async function getStockMovements(user: AuthUser, date?: string) {
   }
   const result = await getDb().execute({
     sql: `select m.id, m.product_id, p.name as product_name, m.movement_type, m.quantity, m.unit,
-        m.movement_date, m.notes, m.created_at, u.name as created_by_name,
+        m.movement_date, m.notes, m.created_at, m.created_by, u.name as created_by_name,
         case when v.viewed_at is null then false else true end as viewed_by_me
       from stock_movements m
       join products p on p.id = m.product_id
@@ -700,6 +672,15 @@ async function getStockMovements(user: AuthUser, date?: string) {
     args,
   })
   return result.rows.map((row) => ({ ...row, id: Number(row.id), product_id: Number(row.product_id), quantity: Number(row.quantity), viewed_by_me: Boolean(row.viewed_by_me) }))
+}
+
+async function assertMovementAccess(id: number, user: AuthUser) {
+  const result = await getDb().execute({ sql: 'select id, created_by from stock_movements where id = ? and active = 1', args: [id] })
+  const movement = result.rows[0]
+  if (!movement) throw Object.assign(new Error('Movimentação não encontrada.'), { statusCode: 404 })
+  if (user.role !== 'gestor' && Number(movement.created_by) !== user.id) {
+    throw Object.assign(new Error('Somente gestores podem alterar movimentações de outras pessoas.'), { statusCode: 403 })
+  }
 }
 
 async function getInventoryCheckSectors(user?: AuthUser) {
@@ -813,7 +794,7 @@ async function getManagerReports(user: AuthUser, startDate?: string, endDate?: s
 
   const placeholders = reportIds.map(() => '?').join(',')
   const attachments = await getDb().execute({
-    sql: `select id, report_id, attachment_type, file_name, mime_type, size_bytes, data_url
+    sql: `select id, report_id, attachment_type, file_name, mime_type, size_bytes
       from manager_report_attachments
       where report_id in (${placeholders})
       order by id`,
@@ -835,7 +816,7 @@ async function getManagerReports(user: AuthUser, startDate?: string, endDate?: s
   }))
 }
 
-const managerReportMaxTotalBytes = 4_000_000
+const managerReportMaxTotalBytes = 3_000_000
 
 const managerReportAttachmentSchema = z.object({
   attachment_type: z.enum(['imagem', 'audio', 'video']),
@@ -962,20 +943,23 @@ export async function handler(event: Event) {
       const body = parseBody(
         event,
         z.object({
-          username: z.string().min(1),
-          pin: z.string().min(1),
+          username: z.string().min(1).max(1000),
+          pin: z.string().min(1).max(1000),
         }),
       )
+      await checkLoginAttempts(body.username, event.headers)
       const result = await getDb().execute({
-        sql: 'select id, name, username, pin_hash, role, active from users where username = ? and active = 1',
+        sql: 'select id, name, username, pin_hash, role, active, session_version from users where username = ? and active = 1',
         args: [body.username],
       })
       const row = result.rows[0] as Record<string, unknown> | undefined
-      if (!row || !(await bcrypt.compare(body.pin, String(row.pin_hash)))) {
+      const validPin = await bcrypt.compare(body.pin, row ? String(row.pin_hash) : missingUserPinHash)
+      if (!row || !validPin) {
         return json(401, { error: 'Usuário ou PIN inválido.' })
       }
       const user = toPublicUser(row)
-      return json(200, { token: await sign(user), user })
+      await clearLoginAttempts(body.username)
+      return json(200, { token: await sign(user, Number(row.session_version ?? 0)), user })
     }
 
     if (path === '/breakfast-menus' && event.httpMethod === 'GET') {
@@ -1157,13 +1141,13 @@ export async function handler(event: Event) {
       if (body.pin) {
         const hash = await bcrypt.hash(body.pin, 10)
         await getDb().execute({
-          sql: 'update users set name = ?, username = ?, role = ?, active = ?, pin_hash = ? where id = ?',
+          sql: 'update users set name = ?, username = ?, role = ?, active = ?, pin_hash = ?, session_version = session_version + 1 where id = ?',
           args: [body.name, body.username, body.role, body.active ? 1 : 0, hash, id],
         })
       } else {
         await getDb().execute({
-          sql: 'update users set name = ?, username = ?, role = ?, active = ? where id = ?',
-          args: [body.name, body.username, body.role, body.active ? 1 : 0, id],
+          sql: 'update users set name = ?, username = ?, role = ?, active = ?, session_version = session_version + case when active <> ? then 1 else 0 end where id = ?',
+          args: [body.name, body.username, body.role, body.active ? 1 : 0, body.active ? 1 : 0, id],
         })
       }
       const result = await getDb().execute({
@@ -1180,7 +1164,7 @@ export async function handler(event: Event) {
         return json(400, { error: 'Você não pode excluir o próprio usuário logado.' })
       }
       await getDb().execute({
-        sql: 'update users set active = 0 where id = ?',
+        sql: 'update users set active = 0, session_version = session_version + 1 where id = ?',
         args: [id],
       })
       return json(200, { ok: true })
@@ -1481,21 +1465,12 @@ export async function handler(event: Event) {
           return json(400, { error: 'Um ou mais produtos não estao disponiveis.' })
         }
 
-        const order = await getDb().execute({
-          sql: 'insert into stock_orders (requested_by, requested_date, request_fingerprint, notes, created_at, updated_at) values (?, ?, ?, ?, ?, ?) returning id',
-          args: [user.id, body.date, requestFingerprint, body.notes?.trim() || null, brazilNowIso(), brazilNowIso()],
+        const orderItems = body.items.map((item) => {
+          const product = productsById.get(item.product_id) as DbRow
+          return { product_id: item.product_id, product_name: String(product.name), product_category: String(product.category), product_unit: String(product.unit), quantity: item.quantity }
         })
+        const order = await getDb().execute(createOrderStatement(user.id, body.date, requestFingerprint, body.notes?.trim() || null, brazilNowIso(), orderItems))
         const orderId = Number(order.rows[0].id)
-        await getDb().batch(
-          body.items.map((item) => {
-            const product = productsById.get(item.product_id) as Record<string, unknown>
-            return {
-              sql: 'insert into stock_order_items (order_id, product_id, product_name, product_category, product_unit, quantity) values (?, ?, ?, ?, ?, ?)',
-              args: [orderId, item.product_id, String(product.name), String(product.category), String(product.unit), item.quantity],
-            }
-          }),
-          'write',
-        )
         const orders = await getStockOrders(user)
         return json(201, orders.find((item) => Number(item.id) === orderId))
       }
@@ -1559,6 +1534,7 @@ export async function handler(event: Event) {
     const stockMovementMatch = path.match(/^\/stock-movements\/(\d+)$/)
     if (stockMovementMatch && event.httpMethod === 'PUT') {
       const user = await requireUser(event)
+      await assertMovementAccess(Number(stockMovementMatch[1]), user)
       const body = parseBody(
         event,
         z.object({
@@ -1587,7 +1563,8 @@ export async function handler(event: Event) {
     }
 
     if (stockMovementMatch && event.httpMethod === 'DELETE') {
-      await requireUser(event)
+      const user = await requireUser(event)
+      await assertMovementAccess(Number(stockMovementMatch[1]), user)
       const result = await getDb().execute({
         sql: 'update stock_movements set active = 0 where id = ? and active = 1 returning id',
         args: [Number(stockMovementMatch[1])],
@@ -1623,6 +1600,28 @@ export async function handler(event: Event) {
       return json(200, { count: Number(result.rows[0]?.total ?? 0) })
     }
 
+    const managerAttachmentMatch = path.match(/^\/manager-reports\/attachments\/(\d+)$/)
+    if (managerAttachmentMatch && event.httpMethod === 'GET') {
+      await requireUser(event, 'gestor')
+      const attachment = await getDb().execute({
+        sql: `select a.id, a.report_id, a.attachment_type, a.file_name, a.mime_type, a.size_bytes, a.data_url
+          from manager_report_attachments a join manager_reports r on r.id = a.report_id
+          where a.id = ? and r.active = 1`,
+        args: [Number(managerAttachmentMatch[1])],
+      })
+      if (!attachment.rows[0]) return json(404, { error: 'Anexo não encontrado.' })
+      const row = attachment.rows[0]
+      const dataUrl = String(row.data_url)
+      const marker = dataUrl.indexOf(';base64,')
+      if (marker < 0 || dataUrlDecodedSize(dataUrl) < 0) return json(500, { error: 'Não foi possível carregar este anexo.' })
+      return {
+        statusCode: 200,
+        headers: { ...json(200, {}).headers, 'Content-Type': normalizeMediaMimeType(String(row.mime_type)), 'Content-Disposition': 'inline' },
+        body: dataUrl.slice(marker + 8),
+        isBase64Encoded: true,
+      }
+    }
+
     if (path === '/manager-reports') {
       const user = await requireUser(event, 'gestor')
       if (event.httpMethod === 'GET') {
@@ -1638,29 +1637,16 @@ export async function handler(event: Event) {
         const body = parseBody(event, managerReportCreateSchema)
         const totalBytes = body.attachments.reduce((total, attachment) => total + attachment.size_bytes, 0)
         if (totalBytes > managerReportMaxTotalBytes) {
-          return json(400, { error: 'Os anexos devem somar no máximo 4 MB.' })
+          return json(400, { error: 'Os anexos devem somar no máximo 3 MB.' })
         }
         const createdAt = brazilNowIso()
         const reportTitle = body.title || (body.attachments.length > 0 ? 'Relatório com anexo' : body.title)
-        const result = await getDb().execute({
-          sql: `insert into manager_reports (title, body, created_by, created_at)
-            values (?, ?, ?, ?)
-            returning id`,
-          args: [reportTitle, body.body, user.id, createdAt],
+        const attachments = body.attachments.map((attachment) => {
+          const mimeType = normalizeMediaMimeType(attachment.mime_type)
+          return { ...attachment, mime_type: mimeType, data_url: normalizeBase64DataUrl(attachment.data_url, mimeType) }
         })
+        const result = await getDb().execute(createReportStatement(user.id, reportTitle, body.body, createdAt, attachments))
         const reportId = Number(result.rows[0]?.id)
-        if (body.attachments.length > 0) {
-          await getDb().batch(body.attachments.map((attachment) => {
-            const mimeType = normalizeMediaMimeType(attachment.mime_type)
-            const dataUrl = normalizeBase64DataUrl(attachment.data_url, mimeType)
-            return {
-              sql: `insert into manager_report_attachments
-                (report_id, attachment_type, file_name, mime_type, size_bytes, data_url, created_at)
-                values (?, ?, ?, ?, ?, ?, ?)`,
-              args: [reportId, attachment.attachment_type, attachment.file_name, mimeType, attachment.size_bytes, dataUrl, createdAt],
-            }
-          }), 'write')
-        }
         const reports = await getManagerReports(user)
         return json(201, reports.find((report) => Number(report.id) === reportId))
       }
@@ -1813,8 +1799,7 @@ export async function handler(event: Event) {
     if (scheduleMatch && event.httpMethod === 'DELETE') {
       await requireUser(event, 'gestor')
       const id = Number(scheduleMatch[1])
-      await getDb().execute({ sql: 'delete from breaks where schedule_id = ?', args: [id] })
-      await getDb().execute({ sql: 'delete from daily_schedules where id = ?', args: [id] })
+      await getDb().batch([{ sql: 'delete from breaks where schedule_id = ?', args: [id] }, { sql: 'delete from daily_schedules where id = ?', args: [id] }])
       return json(200, { ok: true })
     }
 
@@ -1878,8 +1863,7 @@ export async function handler(event: Event) {
     if (taskEditMatch && event.httpMethod === 'DELETE') {
       await requireUser(event, 'gestor')
       const taskId = Number(taskEditMatch[1])
-      await getDb().execute({ sql: 'delete from task_completions where task_id = ?', args: [taskId] })
-      await getDb().execute({ sql: 'delete from tasks where id = ?', args: [taskId] })
+      await getDb().batch([{ sql: 'delete from task_completions where task_id = ?', args: [taskId] }, { sql: 'delete from tasks where id = ?', args: [taskId] }])
       return json(200, { ok: true })
     }
 
@@ -1905,12 +1889,19 @@ export async function handler(event: Event) {
 
     return json(404, { error: 'Rota não encontrada.' })
   } catch (error) {
+    if (typeof error === 'object' && error && 'code' in error && error.code === '23505' && 'constraint' in error && error.constraint === 'idx_stock_orders_request_fingerprint') {
+      return json(409, { error: 'Este pedido já foi enviado. Ele não pode ser enviado novamente.' })
+    }
     if (error instanceof z.ZodError || error instanceof SyntaxError) {
       return json(400, { error: 'Dados inválidos. Confira os campos enviados.' })
     }
     const statusCode = typeof error === 'object' && error && 'statusCode' in error ? Number(error.statusCode) : 500
     if (Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 500) {
-      return json(statusCode, { error: error instanceof Error ? error.message : 'Não foi possível concluir a ação.' })
+      const response = json(statusCode, { error: error instanceof Error ? error.message : 'Não foi possível concluir a ação.' })
+      if (statusCode === 429 && typeof error === 'object' && error && 'retryAfter' in error) {
+        return { ...response, headers: { ...response.headers, 'Retry-After': String(Number(error.retryAfter) || 900) } }
+      }
+      return response
     }
     return json(500, { error: 'Não foi possível concluir a ação. Tente novamente mais tarde.' })
   }

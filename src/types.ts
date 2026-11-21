@@ -78,6 +78,7 @@ export type StockMovement = {
   created_at: string
   created_by_name: string
   viewed_by_me?: boolean
+  created_by: number
 }
 
 export type StockOrderItem = {
@@ -146,7 +147,7 @@ export type ManagerReportAttachment = {
   file_name: string
   mime_type: string
   size_bytes: number
-  data_url: string
+  data_url?: string
 }
 
 export type ManagerReport = {

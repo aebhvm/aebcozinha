@@ -139,6 +139,12 @@ export const api = {
     return request<ManagerReport[]>(`/api/manager-reports${query ? `?${query}` : ''}`)
   },
   managerReportPendingCount: () => request<{ count: number }>('/api/manager-reports/pending-count'),
+  managerReportAttachment: async (id: number, signal?: AbortSignal) => {
+    const session = getSession()
+    const response = await fetch(`/api/manager-reports/attachments/${id}`, { signal, headers: session?.token ? { Authorization: `Bearer ${session.token}` } : {} })
+    if (!response.ok) throw new Error('Não foi possível carregar este anexo.')
+    return response.blob()
+  },
   createManagerReport: (payload: {
     title: string
     body: string

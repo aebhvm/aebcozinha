@@ -22,3 +22,13 @@ export function dataUrlDecodedSize(dataUrl: string) {
   const padding = payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0
   return Math.floor((payload.length * 3) / 4) - padding
 }
+
+export function base64DataUrlToBlob(dataUrl: string, mimeType: string) {
+  const normalized = normalizeBase64DataUrl(dataUrl, mimeType)
+  if (!normalized.startsWith('data:') || dataUrlDecodedSize(normalized) < 0) throw new Error('Conteúdo do arquivo inválido.')
+  const payload = normalized.slice(normalized.indexOf(';base64,') + 8)
+  const binary = atob(payload)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
+  return new Blob([bytes], { type: normalizeMediaMimeType(mimeType) })
+}
